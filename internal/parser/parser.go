@@ -10,10 +10,11 @@ import (
 
 // Parser parses a sequence of tokens into an AST.
 type Parser struct {
-	l      *lexer.Lexer
-	tok    lexer.Token
-	err    error
-	source []byte
+	l        *lexer.Lexer
+	tok      lexer.Token
+	err      error
+	source   []byte
+	errCount int
 }
 
 // New creates a new parser from a lexer.
@@ -27,6 +28,9 @@ func New(l *lexer.Lexer, src []byte) *Parser {
 func (p *Parser) ParseFile() (*ast.File, error) {
 	file := &ast.File{}
 	for p.tok.Kind != lexer.EOF {
+		if p.err != nil {
+			break
+		}
 		decl := p.parseDecl()
 		if decl == nil {
 			break
@@ -44,10 +48,15 @@ func (p *Parser) Err() error { return p.err }
 
 func (p *Parser) setErr(format string, args ...interface{}) {
 	if p.err != nil {
+		p.next()
 		return
 	}
 	p.err = fmt.Errorf(format, args...)
+	p.errCount++
 	p.next()
+	if p.errCount > 100 {
+		p.err = fmt.Errorf("too many parse errors, aborting")
+	}
 }
 
 func (p *Parser) next() {
@@ -65,6 +74,9 @@ func (p *Parser) expect(kind lexer.TokenKind) lexer.Token {
 }
 
 func (p *Parser) parseDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
 	switch p.tok.Kind {
 	case lexer.Fn:
 		return p.parseFnDecl()
@@ -79,6 +91,9 @@ func (p *Parser) parseDecl() ast.Decl {
 }
 
 func (p *Parser) parseFnDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // fn
 	name := p.expect(lexer.Ident)
@@ -105,6 +120,9 @@ func (p *Parser) parseFnDecl() ast.Decl {
 }
 
 func (p *Parser) parseStructDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // struct
 	name := p.expect(lexer.Ident)
@@ -125,6 +143,9 @@ func (p *Parser) parseStructDecl() ast.Decl {
 }
 
 func (p *Parser) parseEnumDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // enum
 	name := p.expect(lexer.Ident)
@@ -143,6 +164,9 @@ func (p *Parser) parseEnumDecl() ast.Decl {
 }
 
 func (p *Parser) parseType() ast.Type {
+	if p.err != nil {
+		return nil
+	}
 	switch p.tok.Kind {
 	case lexer.Ident:
 		pos := ast.Pos(p.tok.Pos)
@@ -180,11 +204,17 @@ func (p *Parser) parseType() ast.Type {
 }
 
 func (p *Parser) parseBlock() *ast.BlockExpr {
+	if p.err != nil {
+		return &ast.BlockExpr{}
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.expect(lexer.LBrace)
 	var stmts []ast.Stmt
 	var result ast.Expr
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
+		if p.err != nil {
+			break
+		}
 		if p.tok.Kind == lexer.Semi {
 			p.next()
 			continue
@@ -196,7 +226,6 @@ func (p *Parser) parseBlock() *ast.BlockExpr {
 				p.next()
 			} else {
 				result = expr
-				// trailing expression must be last in block
 				if p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
 					p.setErr("expected `}` or `;` after expression")
 				}
@@ -219,6 +248,9 @@ func isTrailingExprStart(kind lexer.TokenKind) bool {
 }
 
 func (p *Parser) parseStmt() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	switch p.tok.Kind {
 	case lexer.Let:
 		return p.parseLetStmt()
@@ -238,6 +270,9 @@ func (p *Parser) parseStmt() ast.Stmt {
 }
 
 func (p *Parser) parseLetStmt() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // let
 	name := p.expect(lexer.Ident)
@@ -255,6 +290,9 @@ func (p *Parser) parseLetStmt() ast.Stmt {
 }
 
 func (p *Parser) parseReturnStmt() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // return
 	var expr ast.Expr
@@ -268,6 +306,9 @@ func (p *Parser) parseReturnStmt() ast.Stmt {
 }
 
 func (p *Parser) parseWhileStmt() ast.Stmt {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // while
 	cond := p.parseExpr()
@@ -276,6 +317,9 @@ func (p *Parser) parseWhileStmt() ast.Stmt {
 }
 
 func (p *Parser) parseExpr() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	return p.parseOr()
 }
 
@@ -352,6 +396,9 @@ func (p *Parser) parseMultiplicative() ast.Expr {
 }
 
 func (p *Parser) parseUnary() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	switch p.tok.Kind {
 	case lexer.Minus, lexer.Bang:
 		pos := ast.Pos(p.tok.Pos)
@@ -365,6 +412,9 @@ func (p *Parser) parseUnary() ast.Expr {
 }
 
 func (p *Parser) parsePrimary() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	switch p.tok.Kind {
 	case lexer.IntLit:
 		pos := ast.Pos(p.tok.Pos)
@@ -401,6 +451,14 @@ func (p *Parser) parsePrimary() ast.Expr {
 				idx := p.parseExpr()
 				p.expect(lexer.RBracket)
 				expr = &ast.IndexExpr{Pos: pos, Expr: expr, Index: idx}
+			} else if p.tok.Kind == lexer.LBrace {
+				// Disambiguate: lowercase ident followed by `{` is not a struct literal.
+				// This allows `if b { ... }` without consuming the block brace.
+				if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' {
+					expr = p.parseStructLitFromName(pos, name)
+				} else {
+					break
+				}
 			} else {
 				break
 			}
@@ -417,6 +475,9 @@ func (p *Parser) parsePrimary() ast.Expr {
 }
 
 func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.expect(lexer.LParen)
 	var args []ast.Expr
@@ -430,7 +491,30 @@ func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
 	return &ast.CallExpr{Pos: pos, Func: fn, Args: args}
 }
 
+func (p *Parser) parseStructLitFromName(pos ast.Pos, name string) ast.Expr {
+	if p.err != nil {
+		return nil
+	}
+	p.expect(lexer.LBrace)
+	var fields []ast.FieldInit
+	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
+		fieldPos := ast.Pos(p.tok.Pos)
+		fieldName := p.expect(lexer.Ident)
+		p.expect(lexer.Colon)
+		value := p.parseExpr()
+		fields = append(fields, ast.FieldInit{Pos: fieldPos, Name: fieldName.Text, Value: value})
+		if p.tok.Kind == lexer.Comma {
+			p.next()
+		}
+	}
+	p.expect(lexer.RBrace)
+	return &ast.StructLit{Pos: pos, Name: name, Fields: fields}
+}
+
 func (p *Parser) parseIfExpr() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // if
 	cond := p.parseExpr()
@@ -444,6 +528,9 @@ func (p *Parser) parseIfExpr() ast.Expr {
 }
 
 func (p *Parser) parseArrayLit() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // [
 	var elems []ast.Expr
