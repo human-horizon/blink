@@ -23,6 +23,11 @@ const (
 	Trait
 	Impl
 	Self
+	Pub
+	Mod
+	Use
+	As
+	For
 	I32
 	Bool
 
@@ -75,6 +80,11 @@ var keywords = map[string]TokenKind{
 	"impl":   Impl,
 	"self":   Self,
 	"Self":   Self,
+	"pub":    Pub,
+	"mod":    Mod,
+	"use":    Use,
+	"as":     As,
+	"for":    For,
 	"i32":    I32,
 	"bool":   Bool,
 	"true":   True,

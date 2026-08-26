@@ -59,3 +59,17 @@ func TestCheckInvalidPhase4(t *testing.T) {
 		t.Fatal("expected error for invalid testdata")
 	}
 }
+
+func TestCheckValidPhase5(t *testing.T) {
+	err := checkPath("../../testdata/phase5/valid")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestCheckInvalidPhase5(t *testing.T) {
+	err := checkPath("../../testdata/phase5/invalid")
+	if err == nil {
+		t.Fatal("expected error for invalid testdata")
+	}
+}

@@ -12,7 +12,14 @@ type Pos int
 type Decl interface {
 	Node
 	declNode()
+	IsPublic() bool
 }
+
+type pubDecl struct {
+	Pub bool
+}
+
+func (pubDecl) IsPublic() bool { return false }
 
 // Stmt is a statement.
 type Stmt interface {
@@ -39,16 +46,19 @@ type File struct {
 
 // FnDecl represents a function declaration.
 type FnDecl struct {
-	Pos     Pos
-	Name    string
+	Pos       Pos
+	Pub       bool
+	Name      string
 	GenParams []string
-	Params  []Param
-	Ret     Type // nil if no explicit return type (-> ())
-	Body    *BlockExpr
+	Params    []Param
+	Ret       Type // nil if no explicit return type (-> ())
+	Body      *BlockExpr
 }
 
-func (FnDecl) astNode()  {}
-func (FnDecl) declNode() {}
+func (FnDecl) astNode()     {}
+func (FnDecl) declNode()    {}
+func (d FnDecl) IsPublic() bool { return d.Pub }
+
 
 // Param represents a function parameter.
 type Param struct {
@@ -60,14 +70,17 @@ type Param struct {
 
 // StructDecl represents a struct declaration.
 type StructDecl struct {
-	Pos      Pos
-	Name     string
+	Pos       Pos
+	Pub       bool
+	Name      string
 	GenParams []string
-	Fields   []Field
+	Fields    []Field
 }
 
 func (StructDecl) astNode()  {}
 func (StructDecl) declNode() {}
+func (d StructDecl) IsPublic() bool { return d.Pub }
+
 
 // Field represents a struct field.
 type Field struct {
@@ -78,14 +91,17 @@ type Field struct {
 
 // EnumDecl represents an enum declaration.
 type EnumDecl struct {
-	Pos      Pos
-	Name     string
+	Pos       Pos
+	Pub       bool
+	Name      string
 	GenParams []string
-	Variants []Variant
+	Variants  []Variant
 }
 
 func (EnumDecl) astNode()  {}
 func (EnumDecl) declNode() {}
+func (d EnumDecl) IsPublic() bool { return d.Pub }
+
 
 // Variant represents an enum variant.
 type Variant struct {
@@ -96,12 +112,15 @@ type Variant struct {
 // TraitDecl represents a trait declaration.
 type TraitDecl struct {
 	Pos     Pos
+	Pub     bool
 	Name    string
 	Methods []*FnDecl
 }
 
 func (TraitDecl) astNode()  {}
 func (TraitDecl) declNode() {}
+func (d TraitDecl) IsPublic() bool { return d.Pub }
+
 
 // ImplDecl represents an impl block (trait or inherent).
 type ImplDecl struct {
@@ -113,6 +132,32 @@ type ImplDecl struct {
 
 func (ImplDecl) astNode()  {}
 func (ImplDecl) declNode() {}
+func (ImplDecl) IsPublic() bool { return true }
+
+// ModDecl represents a module declaration.
+type ModDecl struct {
+	Pos       Pos
+	Pub       bool
+	Name      string
+	Inline    *File // non-nil for inline modules
+	File      string // file path for external modules
+}
+
+func (ModDecl) astNode()  {}
+func (ModDecl) declNode() {}
+func (d ModDecl) IsPublic() bool { return d.Pub }
+
+// UseDecl represents a use/import declaration.
+type UseDecl struct {
+	Pos    Pos
+	Path   []string
+	Alias  string // empty if no alias
+}
+
+func (UseDecl) astNode()  {}
+func (UseDecl) declNode() {}
+func (UseDecl) IsPublic() bool { return false }
+
 
 // BlockExpr is a block statement/expression.
 type BlockExpr struct {
@@ -189,6 +234,15 @@ type StringLit struct {
 
 func (StringLit) astNode()  {}
 func (StringLit) exprNode() {}
+
+// PathExpr represents a module-qualified path.
+type PathExpr struct {
+	Pos      Pos
+	Segments []string
+}
+
+func (PathExpr) astNode()  {}
+func (PathExpr) exprNode() {}
 
 // Ident is an identifier expression.
 type Ident struct {

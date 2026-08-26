@@ -1,7 +1,7 @@
 package checker
 
 import (
-	"fmt"
+	"strings"
 
 	"github.com/humanhorizon/blink/internal/ast"
 	"github.com/humanhorizon/blink/internal/diag"
@@ -12,7 +12,9 @@ import (
 type Checker struct {
 	Files       []*ast.File
 	Paths       []string
+	ModulePaths [][]string
 	Reporter    *diag.Reporter
+	currentIdx  int
 	currentPath string
 	fns         map[string]*fnInfo
 	structs     map[string]*structInfo
@@ -20,6 +22,8 @@ type Checker struct {
 	traits      map[string]*traitInfo
 	inherent    map[string]map[string]*fnInfo
 	traitImpls  map[string]map[string]*implInfo
+	imports     []map[string]string
+	itemFile    map[string]int
 }
 
 type fnInfo struct {
@@ -54,59 +58,89 @@ type implInfo struct {
 }
 
 // New creates a checker for the given parsed files and their paths.
-func New(files []*ast.File, paths []string, r *diag.Reporter) *Checker {
+func New(files []*ast.File, paths []string, r *diag.Reporter, modulePaths ...[][]string) *Checker {
+	mp := make([][]string, len(files))
+	if len(modulePaths) > 0 && len(modulePaths[0]) == len(files) {
+		mp = modulePaths[0]
+	}
+	imports := make([]map[string]string, len(files))
+	for i := range files {
+		imports[i] = make(map[string]string)
+	}
 	return &Checker{
-		Files:      files,
-		Paths:      paths,
-		Reporter:   r,
-		fns:        make(map[string]*fnInfo),
-		structs:    make(map[string]*structInfo),
-		enums:      make(map[string]*enumInfo),
-		traits:     make(map[string]*traitInfo),
-		inherent:   make(map[string]map[string]*fnInfo),
-		traitImpls: make(map[string]map[string]*implInfo),
+		Files:       files,
+		Paths:       paths,
+		ModulePaths: mp,
+		Reporter:    r,
+		fns:         make(map[string]*fnInfo),
+		structs:     make(map[string]*structInfo),
+		enums:       make(map[string]*enumInfo),
+		traits:      make(map[string]*traitInfo),
+		inherent:    make(map[string]map[string]*fnInfo),
+		traitImpls:  make(map[string]map[string]*implInfo),
+		imports:     imports,
+		itemFile:    make(map[string]int),
 	}
 }
 
-// Check runs collection and type checking. Returns true if no errors.
 func (c *Checker) Check() bool {
 	c.collect()
 	for i, f := range c.Files {
-		path := c.Paths[i]
-		c.checkFile(f, path)
+		c.currentIdx = i
+		c.currentPath = c.Paths[i]
+		c.checkFile(f, c.Paths[i], i)
 	}
 	return !c.Reporter.HasErrors()
 }
 
+func (c *Checker) qualifiedName(fileIdx int, name string) string {
+	mp := c.ModulePaths[fileIdx]
+	if len(mp) == 0 {
+		return name
+	}
+	return strings.Join(mp, "::") + "::" + name
+}
+
 func (c *Checker) collect() {
 	// First pass: register names so forward references work.
-	for _, f := range c.Files {
+	for i, f := range c.Files {
+		c.currentIdx = i
 		for _, d := range f.Decls {
 			switch decl := d.(type) {
 			case *ast.FnDecl:
-				if _, ok := c.fns[decl.Name]; ok {
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.fns[key]; ok {
 					c.errorf(decl.Pos, "duplicate function `%s`", decl.Name)
 				} else {
-					c.fns[decl.Name] = &fnInfo{decl: decl, genParams: decl.GenParams}
+					c.fns[key] = &fnInfo{decl: decl, genParams: decl.GenParams}
+					c.itemFile[key] = i
 				}
 			case *ast.StructDecl:
-				if _, ok := c.structs[decl.Name]; ok {
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.structs[key]; ok {
 					c.errorf(decl.Pos, "duplicate struct `%s`", decl.Name)
 				} else {
-					c.structs[decl.Name] = &structInfo{decl: decl, genParams: decl.GenParams}
+					c.structs[key] = &structInfo{decl: decl, genParams: decl.GenParams}
+					c.itemFile[key] = i
 				}
 			case *ast.EnumDecl:
-				if _, ok := c.enums[decl.Name]; ok {
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.enums[key]; ok {
 					c.errorf(decl.Pos, "duplicate enum `%s`", decl.Name)
 				} else {
-					c.enums[decl.Name] = &enumInfo{decl: decl, genParams: decl.GenParams}
+					c.enums[key] = &enumInfo{decl: decl, genParams: decl.GenParams}
+					c.itemFile[key] = i
 				}
 			case *ast.TraitDecl:
-				if _, ok := c.traits[decl.Name]; ok {
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.traits[key]; ok {
 					c.errorf(decl.Pos, "duplicate trait `%s`", decl.Name)
 				} else {
-					c.traits[decl.Name] = &traitInfo{decl: decl, methods: make(map[string]*fnInfo)}
+					c.traits[key] = &traitInfo{decl: decl, methods: make(map[string]*fnInfo)}
+					c.itemFile[key] = i
 				}
+			case *ast.UseDecl:
+				c.collectUse(i, decl)
 			}
 		}
 	}
@@ -123,18 +157,88 @@ func (c *Checker) collect() {
 	for _, info := range c.traits {
 		for _, m := range info.decl.Methods {
 			minfo := &fnInfo{decl: m, genParams: m.GenParams}
-			c.fillMethodInfo(minfo, m, []string{"Self"}, &types.Generic{Name: "Self"})
+			selfTy := &types.Ref{Elem: &types.Generic{Name: "Self"}, IsMut: false}
+			c.fillMethodInfo(minfo, m, []string{"Self"}, selfTy)
 			info.methods[m.Name] = minfo
 		}
 	}
 	// Third pass: collect impl blocks.
-	for _, f := range c.Files {
+	for i, f := range c.Files {
+		c.currentIdx = i
 		for _, d := range f.Decls {
 			if impl, ok := d.(*ast.ImplDecl); ok {
 				c.collectImpl(impl)
 			}
 		}
 	}
+}
+
+func (c *Checker) collectUse(fileIdx int, decl *ast.UseDecl) {
+	if len(decl.Path) == 0 {
+		c.errorf(decl.Pos, "empty use path")
+		return
+	}
+	key := strings.Join(decl.Path, "::")
+	alias := decl.Path[len(decl.Path)-1]
+	if decl.Alias != "" {
+		alias = decl.Alias
+	}
+	if _, ok := c.imports[fileIdx][alias]; ok {
+		c.errorf(decl.Pos, "duplicate import alias `%s`", alias)
+		return
+	}
+	c.imports[fileIdx][alias] = key
+}
+
+func (c *Checker) resolveName(name string) string {
+	if key, ok := c.imports[c.currentIdx][name]; ok {
+		return key
+	}
+	return c.qualifiedName(c.currentIdx, name)
+}
+
+func (c *Checker) resolvePath(segments []string) (key string) {
+	expanded := c.expandImport(segments)
+	prefixLen := c.longestModulePrefix(expanded)
+	if prefixLen > 0 {
+		return strings.Join(expanded, "::")
+	}
+	return c.qualifiedName(c.currentIdx, strings.Join(expanded, "::"))
+}
+
+func (c *Checker) expandImport(segments []string) []string {
+	if len(segments) == 0 {
+		return segments
+	}
+	if key, ok := c.imports[c.currentIdx][segments[0]]; ok {
+		prefix := strings.Split(key, "::")
+		return append(prefix, segments[1:]...)
+	}
+	return segments
+}
+
+func (c *Checker) longestModulePrefix(segments []string) int {
+	for l := len(segments); l > 0; l-- {
+		prefix := segments[:l]
+		for _, mp := range c.ModulePaths {
+			if equalStrings(mp, prefix) {
+				return l
+			}
+		}
+	}
+	return 0
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Checker) fillFnInfo(info *fnInfo, path string) {
@@ -199,7 +303,8 @@ func (c *Checker) collectImpl(impl *ast.ImplDecl) {
 				c.errorf(impl.Pos, "missing method `%s` for trait `%s`", name, impl.Trait)
 				continue
 			}
-			if !c.fnSigMatches(expected, provided) {
+			expectedSub := c.substSelf(expected, forType)
+			if !c.fnSigMatches(expectedSub, provided) {
 				c.errorf(provided.decl.Pos, "method `%s` has incompatible signature with trait `%s`", name, impl.Trait)
 			}
 		}
@@ -227,21 +332,37 @@ func (c *Checker) fnSigMatches(a, b *fnInfo) bool {
 	return a.ret.Equals(b.ret)
 }
 
-func (c *Checker) checkFile(f *ast.File, path string) {
+func (c *Checker) substSelf(info *fnInfo, forType types.Type) *fnInfo {
+	mapping := map[string]types.Type{"Self": forType}
+	copy := &fnInfo{decl: info.decl, genParams: info.genParams}
+	for _, p := range info.paramTypes {
+		copy.paramTypes = append(copy.paramTypes, types.Substitute(p, mapping))
+	}
+	copy.ret = types.Substitute(info.ret, mapping)
+	if info.selfType != nil {
+		copy.selfType = types.Substitute(info.selfType, mapping)
+	}
+	return copy
+}
+
+func (c *Checker) checkFile(f *ast.File, path string, idx int) {
+	c.currentIdx = idx
 	c.currentPath = path
 	for _, d := range f.Decls {
 		switch decl := d.(type) {
 		case *ast.FnDecl:
-			c.checkFn(decl, path)
+			c.checkFn(decl, path, idx)
 		case *ast.ImplDecl:
-			c.checkImpl(decl, path)
+			c.checkImpl(decl, path, idx)
 		}
 	}
 }
 
-func (c *Checker) checkFn(fn *ast.FnDecl, path string) {
+func (c *Checker) checkFn(fn *ast.FnDecl, path string, idx int) {
+	c.currentIdx = idx
+	c.currentPath = path
 	env := newEnv(nil)
-	info := c.fns[fn.Name]
+	info := c.fns[c.qualifiedName(idx, fn.Name)]
 	if info == nil {
 		c.errorf(fn.Pos, "internal error: missing function info for `%s`", fn.Name)
 		return
@@ -256,7 +377,9 @@ func (c *Checker) checkFn(fn *ast.FnDecl, path string) {
 	}
 }
 
-func (c *Checker) checkImpl(impl *ast.ImplDecl, path string) {
+func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
+	c.currentIdx = idx
+	c.currentPath = path
 	forType := c.resolveType(impl.ForType, path, nil)
 	typeName := c.typeName(forType)
 	var implMethods map[string]*fnInfo
@@ -303,10 +426,11 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 	case *ast.Ident:
 		ty, ok := env.get(e.Name)
 		if !ok {
-			if _, ok := c.structs[e.Name]; ok {
+			key := c.resolveName(e.Name)
+			if _, ok := c.structs[key]; ok && c.canAccess(key) {
 				return &types.Named{Name: e.Name}
 			}
-			if _, ok := c.enums[e.Name]; ok {
+			if _, ok := c.enums[key]; ok && c.canAccess(key) {
 				return &types.Named{Name: e.Name}
 			}
 			c.errorf(e.Pos, "cannot find value `%s` in this scope", e.Name)
@@ -316,6 +440,8 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 			c.useRead(loans, e, ty)
 		}
 		return ty
+	case *ast.PathExpr:
+		return c.checkPathExpr(e)
 	case *ast.BinaryExpr:
 		return c.checkBinary(e, env, loans, path)
 	case *ast.UnaryExpr:
@@ -338,6 +464,105 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 		c.errorf(PosOf(expr), "unsupported expression")
 		return &types.Error{}
 	}
+}
+
+func (c *Checker) canAccess(key string) bool {
+	fileIdx, ok := c.itemFile[key]
+	if !ok {
+		return false
+	}
+	if equalStrings(c.ModulePaths[fileIdx], c.ModulePaths[c.currentIdx]) {
+		return true
+	}
+	if info, ok := c.fns[key]; ok {
+		return info.decl.IsPublic()
+	}
+	if info, ok := c.structs[key]; ok {
+		return info.decl.IsPublic()
+	}
+	if info, ok := c.enums[key]; ok {
+		return info.decl.IsPublic()
+	}
+	if info, ok := c.traits[key]; ok {
+		return info.decl.IsPublic()
+	}
+	return false
+}
+
+func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
+	key, _, typeKey, method := c.resolvePathDetails(e.Segments)
+	if method != "" {
+		m := c.findInherentMethod(typeKey, method)
+		if m == nil {
+			c.errorf(e.Pos, "no static method `%s` found for type `%s`", method, typeKey)
+			return &types.Error{}
+		}
+		if m.selfType != nil {
+			c.errorf(e.Pos, "method `%s` requires an instance", method)
+			return &types.Error{}
+		}
+		return &types.Named{Name: "fn"}
+	}
+	if key != "" && c.canAccess(key) {
+		if _, ok := c.structs[key]; ok {
+			if len(e.Segments) > 0 {
+				return &types.Named{Name: e.Segments[len(e.Segments)-1]}
+			}
+			return &types.Named{Name: key}
+		}
+		if _, ok := c.enums[key]; ok {
+			return &types.Named{Name: key}
+		}
+		if _, ok := c.fns[key]; ok {
+			return &types.Named{Name: "fn"}
+		}
+	}
+	c.errorf(e.Pos, "unresolved path `%s`", strings.Join(e.Segments, "::"))
+	return &types.Error{}
+}
+
+func (c *Checker) resolvePathDetails(segments []string) (key string, isType bool, typeKey string, method string) {
+	expanded := c.expandImport(segments)
+	if len(expanded) == 0 {
+		return "", false, "", ""
+	}
+	// Static method: first segment is a type name in current module.
+	if len(expanded) >= 2 {
+		typeKey = c.qualifiedName(c.currentIdx, expanded[0])
+		if _, ok := c.structs[typeKey]; ok {
+			return "", false, typeKey, expanded[1]
+		}
+	}
+	// Longest module prefix.
+	for l := len(expanded); l > 0; l-- {
+		prefix := expanded[:l]
+		for _, mp := range c.ModulePaths {
+			if equalStrings(mp, prefix) {
+				key = strings.Join(expanded, "::")
+				if c.canAccess(key) {
+					return key, false, "", ""
+				}
+				return "", false, "", ""
+			}
+		}
+	}
+	// Current module item.
+	key = c.qualifiedName(c.currentIdx, strings.Join(expanded, "::"))
+	if c.canAccess(key) {
+		if _, ok := c.fns[key]; ok {
+			return key, false, "", ""
+		}
+		if _, ok := c.structs[key]; ok {
+			return key, true, "", ""
+		}
+		if _, ok := c.enums[key]; ok {
+			return key, true, "", ""
+		}
+		if _, ok := c.traits[key]; ok {
+			return key, false, "", ""
+		}
+	}
+	return "", false, "", ""
 }
 
 func (c *Checker) checkBinary(e *ast.BinaryExpr, env *environment, loans *borrowCtx, path string) types.Type {
@@ -423,9 +648,38 @@ func (c *Checker) checkUnary(e *ast.UnaryExpr, env *environment, loans *borrowCt
 func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx, path string) types.Type {
 	switch fn := e.Func.(type) {
 	case *ast.Ident:
-		info, ok := c.fns[fn.Name]
+		key := c.resolveName(fn.Name)
+		if !c.canAccess(key) {
+			c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
+			return &types.Error{}
+		}
+		info, ok := c.fns[key]
 		if !ok {
 			c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
+			return &types.Error{}
+		}
+		return c.checkFnCall(info, e.Args, nil, env, loans, path)
+	case *ast.PathExpr:
+		key, _, typeKey, method := c.resolvePathDetails(fn.Segments)
+		if method != "" {
+			m := c.findInherentMethod(typeKey, method)
+			if m == nil {
+				c.errorf(fn.Pos, "no static method `%s` found for type `%s`", method, typeKey)
+				return &types.Error{}
+			}
+			if m.selfType != nil {
+				c.errorf(fn.Pos, "method `%s` requires an instance", method)
+				return &types.Error{}
+			}
+			return c.checkFnCall(m, e.Args, nil, env, loans, path)
+		}
+		if !c.canAccess(key) {
+			c.errorf(fn.Pos, "cannot find function `%s`", strings.Join(fn.Segments, "::"))
+			return &types.Error{}
+		}
+		info, ok := c.fns[key]
+		if !ok {
+			c.errorf(fn.Pos, "cannot find function `%s`", strings.Join(fn.Segments, "::"))
 			return &types.Error{}
 		}
 		return c.checkFnCall(info, e.Args, nil, env, loans, path)
@@ -536,8 +790,9 @@ func (c *Checker) isTypeName(expr ast.Expr, env *environment) bool {
 	if _, ok := env.vars[ident.Name]; ok {
 		return false
 	}
-	_, isStruct := c.structs[ident.Name]
-	_, isEnum := c.enums[ident.Name]
+	key := c.resolveName(ident.Name)
+	_, isStruct := c.structs[key]
+	_, isEnum := c.enums[key]
 	return isStruct || isEnum
 }
 
@@ -646,7 +901,12 @@ func (c *Checker) checkIndex(e *ast.IndexExpr, env *environment, loans *borrowCt
 }
 
 func (c *Checker) checkStructLit(e *ast.StructLit, env *environment, loans *borrowCtx, path string) types.Type {
-	st, ok := c.structs[e.Name]
+	key := c.resolveName(e.Name)
+	if !c.canAccess(key) {
+		c.errorf(e.Pos, "unknown struct `%s`", e.Name)
+		return &types.Error{}
+	}
+	st, ok := c.structs[key]
 	if !ok {
 		c.errorf(e.Pos, "unknown struct `%s`", e.Name)
 		return &types.Error{}
@@ -734,7 +994,7 @@ func (c *Checker) checkArrayLit(e *ast.ArrayLit, env *environment, loans *borrow
 			c.errorf(PosOf(elem), "expected `%s`, found `%s`", elemTy, ty)
 		}
 	}
-	return &types.Array{Elem: elemTy, Size: len(e.Elems)}
+	return &types.Array{Elem: elemTy, Len: int64(len(e.Elems))}
 }
 
 func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types.Type {
@@ -752,25 +1012,39 @@ func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types
 			c.errorf(ty.Pos, "`Self` is only valid inside a trait or impl")
 			return &types.Error{}
 		}
-		return &types.Named{Name: ty.Name}
-	case *ast.GenericType:
-		base := c.resolveType(ty.Base, path, genParams)
-		var args []types.Type
-		for _, a := range ty.Args {
-			args = append(args, c.resolveType(a, path, genParams))
+		switch ty.Name {
+		case "i32":
+			return types.I32
+		case "bool":
+			return types.Bool
+		case "String":
+			return types.String
 		}
-		return &types.Applied{Base: base, Args: args}
+		for _, p := range genParams {
+			if p == ty.Name {
+				return &types.Generic{Name: ty.Name}
+			}
+		}
+		base := types.Type(&types.Named{Name: ty.Name})
+		if len(ty.Args) > 0 {
+			var args []types.Type
+			for _, a := range ty.Args {
+				args = append(args, c.resolveType(a, path, genParams))
+			}
+			base = &types.Applied{Base: base, Args: args}
+		}
+		return base
 	case *ast.RefType:
 		return &types.Ref{Elem: c.resolveType(ty.Elem, path, genParams), IsMut: ty.IsMut}
 	case *ast.ArrayType:
-		return &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Size: ty.Size}
+		return &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Len: ty.Len}
 	default:
 		return &types.Error{}
 	}
 }
 
 func (c *Checker) errorf(pos ast.Pos, format string, args ...interface{}) {
-	c.Reporter.Add(diag.New(c.currentPath, pos, fmt.Sprintf(format, args...)))
+	c.Reporter.Errorf(c.currentPath, 1, 1, format, args...)
 }
 
 func PosOf(n ast.Node) ast.Pos {

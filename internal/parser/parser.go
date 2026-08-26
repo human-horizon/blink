@@ -77,24 +77,33 @@ func (p *Parser) parseDecl() ast.Decl {
 	if p.err != nil {
 		return nil
 	}
+	pub := false
+	if p.tok.Kind == lexer.Pub {
+		pub = true
+		p.next()
+	}
 	switch p.tok.Kind {
 	case lexer.Fn:
-		return p.parseFnDecl()
+		return p.parseFnDecl(pub)
 	case lexer.Struct:
-		return p.parseStructDecl()
+		return p.parseStructDecl(pub)
 	case lexer.Enum:
-		return p.parseEnumDecl()
+		return p.parseEnumDecl(pub)
 	case lexer.Trait:
-		return p.parseTraitDecl()
+		return p.parseTraitDecl(pub)
 	case lexer.Impl:
 		return p.parseImplDecl()
+	case lexer.Mod:
+		return p.parseModDecl(pub)
+	case lexer.Use:
+		return p.parseUseDecl()
 	default:
 		p.setErr("unexpected token %v at top level", p.tok.Kind)
 		return nil
 	}
 }
 
-func (p *Parser) parseFnDecl() ast.Decl {
+func (p *Parser) parseFnDecl(pub bool) ast.Decl {
 	if p.err != nil {
 		return nil
 	}
@@ -117,21 +126,21 @@ func (p *Parser) parseFnDecl() ast.Decl {
 		ret = p.parseType()
 	}
 	body := p.parseBlock()
-	return &ast.FnDecl{Pos: pos, Name: name.Text, GenParams: genParams, Params: params, Ret: ret, Body: body}
+	return &ast.FnDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Params: params, Ret: ret, Body: body}
 }
 
 func (p *Parser) parseParam() ast.Param {
 	paramPos := ast.Pos(p.tok.Pos)
 	if p.tok.Kind == lexer.And {
 		p.next()
-		if p.tok.Kind == lexer.Ident && p.tok.Text == "self" {
+		if (p.tok.Kind == lexer.Ident && p.tok.Text == "self") || p.tok.Kind == lexer.Self {
 			p.next()
 			return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
 		}
 		p.setErr("expected `self` after `&`")
 		return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
 	}
-	if p.tok.Kind == lexer.Ident && p.tok.Text == "self" {
+	if (p.tok.Kind == lexer.Ident && p.tok.Text == "self") || p.tok.Kind == lexer.Self {
 		p.next()
 		return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
 	}
@@ -141,7 +150,7 @@ func (p *Parser) parseParam() ast.Param {
 	return ast.Param{Pos: paramPos, Name: paramName.Text, Ty: ty}
 }
 
-func (p *Parser) parseTraitDecl() ast.Decl {
+func (p *Parser) parseTraitDecl(pub bool) ast.Decl {
 	if p.err != nil {
 		return nil
 	}
@@ -151,12 +160,20 @@ func (p *Parser) parseTraitDecl() ast.Decl {
 	p.expect(lexer.LBrace)
 	var methods []*ast.FnDecl
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
-		fn := p.parseFnSig().(*ast.FnDecl)
+		decl := p.parseFnSig()
+		if decl == nil {
+			break
+		}
+		fn, ok := decl.(*ast.FnDecl)
+		if !ok {
+			p.setErr("expected method signature")
+			break
+		}
 		p.expect(lexer.Semi)
 		methods = append(methods, fn)
 	}
 	p.expect(lexer.RBrace)
-	return &ast.TraitDecl{Pos: pos, Name: name.Text, Methods: methods}
+	return &ast.TraitDecl{Pos: pos, Pub: pub, Name: name.Text, Methods: methods}
 }
 
 func (p *Parser) parseImplDecl() ast.Decl {
@@ -182,11 +199,63 @@ func (p *Parser) parseImplDecl() ast.Decl {
 	p.expect(lexer.LBrace)
 	var methods []*ast.FnDecl
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
-		fn := p.parseFnDecl().(*ast.FnDecl)
+		decl := p.parseFnDecl(false)
+		if decl == nil {
+			break
+		}
+		fn, ok := decl.(*ast.FnDecl)
+		if !ok {
+			p.setErr("expected method declaration")
+			break
+		}
 		methods = append(methods, fn)
 	}
 	p.expect(lexer.RBrace)
 	return &ast.ImplDecl{Pos: pos, Trait: trait, ForType: forType, Methods: methods}
+}
+
+func (p *Parser) parseModDecl(pub bool) ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // mod
+	name := p.expect(lexer.Ident)
+	if p.tok.Kind == lexer.Semi {
+		p.next()
+		return &ast.ModDecl{Pos: pos, Pub: pub, Name: name.Text, File: name.Text + ".rs"}
+	}
+	p.expect(lexer.LBrace)
+	inline := &ast.File{}
+	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
+		inline.Decls = append(inline.Decls, p.parseDecl())
+	}
+	p.expect(lexer.RBrace)
+	return &ast.ModDecl{Pos: pos, Pub: pub, Name: name.Text, Inline: inline}
+}
+
+func (p *Parser) parseUseDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // use
+	var path []string
+	first := p.expect(lexer.Ident)
+	path = append(path, first.Text)
+	for p.tok.Kind == lexer.ColonColon {
+		p.next()
+		part := p.expect(lexer.Ident)
+		path = append(path, part.Text)
+	}
+	alias := ""
+	if p.tok.Kind == lexer.As {
+		p.next()
+		aliasTok := p.expect(lexer.Ident)
+		alias = aliasTok.Text
+	}
+	p.expect(lexer.Semi)
+	return &ast.UseDecl{Pos: pos, Path: path, Alias: alias}
 }
 
 func (p *Parser) parseFnSig() ast.Decl {
@@ -214,7 +283,7 @@ func (p *Parser) parseFnSig() ast.Decl {
 	return &ast.FnDecl{Pos: pos, Name: name.Text, GenParams: genParams, Params: params, Ret: ret}
 }
 
-func (p *Parser) parseStructDecl() ast.Decl {
+func (p *Parser) parseStructDecl(pub bool) ast.Decl {
 	if p.err != nil {
 		return nil
 	}
@@ -235,10 +304,10 @@ func (p *Parser) parseStructDecl() ast.Decl {
 		}
 	}
 	p.expect(lexer.RBrace)
-	return &ast.StructDecl{Pos: pos, Name: name.Text, GenParams: genParams, Fields: fields}
+	return &ast.StructDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Fields: fields}
 }
 
-func (p *Parser) parseEnumDecl() ast.Decl {
+func (p *Parser) parseEnumDecl(pub bool) ast.Decl {
 	if p.err != nil {
 		return nil
 	}
@@ -257,7 +326,7 @@ func (p *Parser) parseEnumDecl() ast.Decl {
 		}
 	}
 	p.expect(lexer.RBrace)
-	return &ast.EnumDecl{Pos: pos, Name: name.Text, GenParams: genParams, Variants: variants}
+	return &ast.EnumDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Variants: variants}
 }
 
 func (p *Parser) parseGenericParams() []string {
@@ -592,11 +661,14 @@ func (p *Parser) parsePrimary() ast.Expr {
 		text := p.tok.Text
 		p.next()
 		return &ast.StringLit{Pos: pos, Val: text}
-	case lexer.Ident:
+	case lexer.Ident, lexer.Self:
 		pos := ast.Pos(p.tok.Pos)
 		name := p.tok.Text
+		if p.tok.Kind == lexer.Self {
+			name = "self"
+		}
 		p.next()
-		expr := ast.Expr(&ast.Ident{Pos: pos, Name: name})
+		expr := p.parsePathOrExpr(pos, name)
 		for {
 			if p.tok.Kind == lexer.LParen {
 				expr = p.parseCall(expr)
@@ -608,19 +680,22 @@ func (p *Parser) parsePrimary() ast.Expr {
 				} else {
 					expr = &ast.FieldExpr{Pos: ast.Pos(field.Pos), Expr: expr, Field: field.Text}
 				}
-			} else if p.tok.Kind == lexer.ColonColon {
-				p.next()
-				method := p.expect(lexer.Ident)
-				expr = p.parseStaticCall(expr, method)
+			} else if p.tok.Kind == lexer.LBracket {
 				p.next()
 				idx := p.parseExpr()
 				p.expect(lexer.RBracket)
 				expr = &ast.IndexExpr{Pos: pos, Expr: expr, Index: idx}
 			} else if p.tok.Kind == lexer.LBrace {
 				// Disambiguate: lowercase ident followed by `{` is not a struct literal.
-				// This allows `if b { ... }` without consuming the block brace.
-				if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' {
-					expr = p.parseStructLitFromName(pos, name)
+				if ident, ok := expr.(*ast.Ident); ok && len(ident.Name) > 0 && ident.Name[0] >= 'A' && ident.Name[0] <= 'Z' {
+					expr = p.parseStructLitFromName(pos, ident.Name)
+				} else if path, ok := expr.(*ast.PathExpr); ok && len(path.Segments) > 0 {
+					last := path.Segments[len(path.Segments)-1]
+					if len(last) > 0 && last[0] >= 'A' && last[0] <= 'Z' {
+						expr = p.parseStructLitFromName(pos, last)
+					} else {
+						break
+					}
 				} else {
 					break
 				}
@@ -637,6 +712,19 @@ func (p *Parser) parsePrimary() ast.Expr {
 		p.setErr("unexpected token %v in expression", p.tok.Kind)
 		return nil
 	}
+}
+
+func (p *Parser) parsePathOrExpr(pos ast.Pos, first string) ast.Expr {
+	if p.tok.Kind != lexer.ColonColon {
+		return &ast.Ident{Pos: pos, Name: first}
+	}
+	segs := []string{first}
+	for p.tok.Kind == lexer.ColonColon {
+		p.next()
+		part := p.expect(lexer.Ident)
+		segs = append(segs, part.Text)
+	}
+	return &ast.PathExpr{Pos: pos, Segments: segs}
 }
 
 func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
@@ -659,12 +747,6 @@ func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
 func (p *Parser) parseMethodCall(receiver ast.Expr, method lexer.Token) ast.Expr {
 	pos := ast.Pos(method.Pos)
 	field := &ast.FieldExpr{Pos: pos, Expr: receiver, Field: method.Text}
-	return p.parseCall(field)
-}
-
-func (p *Parser) parseStaticCall(tyExpr ast.Expr, method lexer.Token) ast.Expr {
-	pos := ast.Pos(method.Pos)
-	field := &ast.FieldExpr{Pos: pos, Expr: tyExpr, Field: method.Text}
 	return p.parseCall(field)
 }
 

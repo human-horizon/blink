@@ -3,13 +3,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
+	"github.com/humanhorizon/blink/internal/ast"
 	"github.com/humanhorizon/blink/internal/checker"
 	"github.com/humanhorizon/blink/internal/diag"
 	"github.com/humanhorizon/blink/internal/lexer"
 	"github.com/humanhorizon/blink/internal/parser"
-	"github.com/humanhorizon/blink/internal/source"
-	"github.com/humanhorizon/blink/internal/ast"
 )
 
 func main() {
@@ -25,31 +26,78 @@ func main() {
 }
 
 func checkPath(path string) error {
-	fs, err := source.LoadDir(path)
+	files, paths, modPaths, err := loadModules(path)
 	if err != nil {
 		return err
 	}
-	if len(fs.Files) == 0 {
+	if len(files) == 0 {
 		return fmt.Errorf("no .rs files found in %s", path)
 	}
-	var files []*ast.File
-	var paths []string
 	rep := &diag.Reporter{}
-	for _, f := range fs.Files {
-		l := lexer.New(f.Content)
-		p := parser.New(l, f.Content)
-		file, err := p.ParseFile()
-		if err != nil {
-			rep.Errorf(f.Path, 1, 1, "parse error: %v", err)
-			continue
-		}
-		files = append(files, file)
-		paths = append(paths, f.Path)
-	}
-	chk := checker.New(files, paths, rep)
+	chk := checker.New(files, paths, rep, modPaths)
 	chk.Check()
 	if rep.HasErrors() {
 		return fmt.Errorf("%s", rep.String())
 	}
 	return nil
+}
+
+func loadModules(dir string) ([]*ast.File, []string, [][]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var root string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == "main.rs" || name == "lib.rs" {
+			root = name
+			break
+		}
+		if root == "" && strings.HasSuffix(name, ".rs") {
+			root = name
+		}
+	}
+	if root == "" {
+		return nil, nil, nil, fmt.Errorf("no root .rs file in %s", dir)
+	}
+	return loadFile(filepath.Join(dir, root), []string{}, dir)
+}
+
+func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string, [][]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("cannot read %s: %w", path, err)
+	}
+	l := lexer.New(data)
+	p := parser.New(l, data)
+	file, err := p.ParseFile()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("parse error in %s: %w", path, err)
+	}
+	var childFiles []*ast.File
+	var childPaths []string
+	var childModPaths [][]string
+	for _, d := range file.Decls {
+		mod, ok := d.(*ast.ModDecl)
+		if !ok || mod.Inline != nil {
+			continue
+		}
+		childPath := filepath.Join(dir, mod.File)
+		childModPath := append(append([]string{}, modPath...), mod.Name)
+		cfs, cps, cmps, err := loadFile(childPath, childModPath, dir)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		childFiles = append(childFiles, cfs...)
+		childPaths = append(childPaths, cps...)
+		childModPaths = append(childModPaths, cmps...)
+	}
+	resultFiles := append([]*ast.File{file}, childFiles...)
+	resultPaths := append([]string{path}, childPaths...)
+	resultModPaths := append([][]string{modPath}, childModPaths...)
+	return resultFiles, resultPaths, resultModPaths, nil
 }
