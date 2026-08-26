@@ -30,6 +30,27 @@ func TestParseStruct(t *testing.T) {
 	}
 }
 
+func TestParseGenericFn(t *testing.T) {
+	_, err := parse("fn identity<T>(x: T) -> T { x }")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+}
+
+func TestParseGenericStruct(t *testing.T) {
+	_, err := parse("struct Pair<T, U> { first: T, second: U }")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+}
+
+func TestParseTypeArgs(t *testing.T) {
+	_, err := parse("fn main() { let p: Pair<i32, bool> = Pair { first: 1, second: true }; }")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+}
+
 func TestParseInvalid(t *testing.T) {
 	_, err := parse("fn foo { }")
 	if err == nil {

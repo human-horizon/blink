@@ -27,6 +27,95 @@ func (b *Builtin) Equals(other Type) bool {
 	return ok && o.Name == b.Name
 }
 
+// Generic is a generic type parameter.
+type Generic struct {
+	Name string
+}
+
+func (g *Generic) typeMarker() {}
+func (g *Generic) String() string { return g.Name }
+func (g *Generic) Equals(other Type) bool {
+	o, ok := other.(*Generic)
+	return ok && o.Name == g.Name
+}
+
+// Applied is a generic type instantiation.
+type Applied struct {
+	Base Type
+	Args []Type
+}
+
+func (a *Applied) typeMarker() {}
+func (a *Applied) String() string {
+	var s string
+	for i, arg := range a.Args {
+		if i > 0 {
+			s += ", "
+		}
+		s += arg.String()
+	}
+	return a.Base.String() + "<" + s + ">"
+}
+func (a *Applied) Equals(other Type) bool {
+	o, ok := other.(*Applied)
+	if !ok || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
+		return false
+	}
+	for i, arg := range a.Args {
+		if !arg.Equals(o.Args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// Substitute replaces Generic types according to mapping.
+func Substitute(t Type, mapping map[string]Type) Type {
+	switch ty := t.(type) {
+	case *Generic:
+		if sub, ok := mapping[ty.Name]; ok {
+			return sub
+		}
+		return ty
+	case *Ref:
+		return &Ref{Elem: Substitute(ty.Elem, mapping), IsMut: ty.IsMut}
+	case *Array:
+		return &Array{Elem: Substitute(ty.Elem, mapping), Len: ty.Len}
+	case *Applied:
+		args := make([]Type, len(ty.Args))
+		for i, arg := range ty.Args {
+			args[i] = Substitute(arg, mapping)
+		}
+		return &Applied{Base: ty.Base, Args: args}
+	default:
+		return t
+	}
+}
+
+// Unify tries to find substitutions for params that make want equal to got.
+func Unify(want Type, got Type, mapping map[string]Type) bool {
+	if g, ok := want.(*Generic); ok {
+		if existing, ok := mapping[g.Name]; ok {
+			return existing.Equals(got)
+		}
+		mapping[g.Name] = got
+		return true
+	}
+	if wantApp, ok := want.(*Applied); ok {
+		gotApp, ok := got.(*Applied)
+		if !ok || !wantApp.Base.Equals(gotApp.Base) || len(wantApp.Args) != len(gotApp.Args) {
+			return false
+		}
+		for i, arg := range wantApp.Args {
+			if !Unify(arg, gotApp.Args[i], mapping) {
+				return false
+			}
+		}
+		return true
+	}
+	return want.Equals(got)
+}
+
 // Named is a user-defined type by name.
 type Named struct {
 	Name string

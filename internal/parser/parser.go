@@ -97,6 +97,7 @@ func (p *Parser) parseFnDecl() ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // fn
 	name := p.expect(lexer.Ident)
+	genParams := p.parseGenericParams()
 	p.expect(lexer.LParen)
 	var params []ast.Param
 	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
@@ -116,7 +117,7 @@ func (p *Parser) parseFnDecl() ast.Decl {
 		ret = p.parseType()
 	}
 	body := p.parseBlock()
-	return &ast.FnDecl{Pos: pos, Name: name.Text, Params: params, Ret: ret, Body: body}
+	return &ast.FnDecl{Pos: pos, Name: name.Text, GenParams: genParams, Params: params, Ret: ret, Body: body}
 }
 
 func (p *Parser) parseStructDecl() ast.Decl {
@@ -126,6 +127,7 @@ func (p *Parser) parseStructDecl() ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // struct
 	name := p.expect(lexer.Ident)
+	genParams := p.parseGenericParams()
 	p.expect(lexer.LBrace)
 	var fields []ast.Field
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
@@ -139,7 +141,7 @@ func (p *Parser) parseStructDecl() ast.Decl {
 		}
 	}
 	p.expect(lexer.RBrace)
-	return &ast.StructDecl{Pos: pos, Name: name.Text, Fields: fields}
+	return &ast.StructDecl{Pos: pos, Name: name.Text, GenParams: genParams, Fields: fields}
 }
 
 func (p *Parser) parseEnumDecl() ast.Decl {
@@ -149,6 +151,7 @@ func (p *Parser) parseEnumDecl() ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // enum
 	name := p.expect(lexer.Ident)
+	genParams := p.parseGenericParams()
 	p.expect(lexer.LBrace)
 	var variants []ast.Variant
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
@@ -160,7 +163,40 @@ func (p *Parser) parseEnumDecl() ast.Decl {
 		}
 	}
 	p.expect(lexer.RBrace)
-	return &ast.EnumDecl{Pos: pos, Name: name.Text, Variants: variants}
+	return &ast.EnumDecl{Pos: pos, Name: name.Text, GenParams: genParams, Variants: variants}
+}
+
+func (p *Parser) parseGenericParams() []string {
+	if p.tok.Kind != lexer.Lt {
+		return nil
+	}
+	p.next() // <
+	var params []string
+	for p.tok.Kind != lexer.Gt && p.tok.Kind != lexer.EOF {
+		t := p.expect(lexer.Ident)
+		params = append(params, t.Text)
+		if p.tok.Kind == lexer.Comma {
+			p.next()
+		}
+	}
+	p.expect(lexer.Gt)
+	return params
+}
+
+func (p *Parser) parseTypeArgs() []ast.Type {
+	if p.tok.Kind != lexer.Lt {
+		return nil
+	}
+	p.next() // <
+	var args []ast.Type
+	for p.tok.Kind != lexer.Gt && p.tok.Kind != lexer.EOF {
+		args = append(args, p.parseType())
+		if p.tok.Kind == lexer.Comma {
+			p.next()
+		}
+	}
+	p.expect(lexer.Gt)
+	return args
 }
 
 func (p *Parser) parseType() ast.Type {
@@ -172,11 +208,19 @@ func (p *Parser) parseType() ast.Type {
 		pos := ast.Pos(p.tok.Pos)
 		name := p.tok.Text
 		p.next()
-		return &ast.NamedType{Pos: pos, Name: name}
+		var args []ast.Type
+		if p.tok.Kind == lexer.Lt {
+			args = p.parseTypeArgs()
+		}
+		return &ast.NamedType{Pos: pos, Name: name, Args: args}
 	case lexer.I32, lexer.Bool:
 		pos := ast.Pos(p.tok.Pos)
 		name := p.tok.Text
 		p.next()
+		if p.tok.Kind == lexer.Lt {
+			p.setErr("primitive type `%s` cannot have generic arguments", name)
+			p.parseTypeArgs()
+		}
 		return &ast.NamedType{Pos: pos, Name: name}
 	case lexer.And:
 		pos := ast.Pos(p.tok.Pos)

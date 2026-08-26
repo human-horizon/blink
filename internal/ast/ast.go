@@ -39,11 +39,12 @@ type File struct {
 
 // FnDecl represents a function declaration.
 type FnDecl struct {
-	Pos    Pos
-	Name   string
-	Params []Param
-	Ret    Type // nil if no explicit return type (-> ())
-	Body   *BlockExpr
+	Pos     Pos
+	Name    string
+	GenParams []string
+	Params  []Param
+	Ret     Type // nil if no explicit return type (-> ())
+	Body    *BlockExpr
 }
 
 func (FnDecl) astNode()  {}
@@ -58,9 +59,10 @@ type Param struct {
 
 // StructDecl represents a struct declaration.
 type StructDecl struct {
-	Pos    Pos
-	Name   string
-	Fields []Field
+	Pos      Pos
+	Name     string
+	GenParams []string
+	Fields   []Field
 }
 
 func (StructDecl) astNode()  {}
@@ -75,8 +77,9 @@ type Field struct {
 
 // EnumDecl represents an enum declaration.
 type EnumDecl struct {
-	Pos     Pos
-	Name    string
+	Pos      Pos
+	Name     string
+	GenParams []string
 	Variants []Variant
 }
 
@@ -261,10 +264,11 @@ type ArrayLit struct {
 func (ArrayLit) astNode()  {}
 func (ArrayLit) exprNode() {}
 
-// NamedType is a named type reference.
+// NamedType is a named type reference, optionally instantiated with type arguments.
 type NamedType struct {
 	Pos  Pos
 	Name string
+	Args []Type
 }
 
 func (NamedType) astNode()  {}

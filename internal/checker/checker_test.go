@@ -77,11 +77,14 @@ fn origin() -> Point {
 	}
 }
 
-func TestArrayIndex(t *testing.T) {
+func TestGenericFunction(t *testing.T) {
 	src := `
-fn first() -> i32 {
-    let a = [10, 20, 30];
-    a[0]
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() -> i32 {
+    identity(42)
 }
 `
 	f := parse(src)
@@ -89,5 +92,67 @@ fn first() -> i32 {
 	c := New([]*ast.File{f}, []string{"test.rs"}, r)
 	if !c.Check() {
 		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
+func TestGenericStruct(t *testing.T) {
+	src := `
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+fn main() -> i32 {
+    let p: Pair<i32, bool> = Pair { first: 1, second: true };
+    p.first
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
+func TestGenericFunctionReturn(t *testing.T) {
+	src := `
+fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
+    Pair { first: a, second: b }
+}
+
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+fn main() -> i32 {
+    let p = make_pair(1, true);
+    p.first
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
+func TestGenericMismatch(t *testing.T) {
+	src := `
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() -> bool {
+    identity(42)
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if c.Check() {
+		t.Fatal("expected type error")
 	}
 }

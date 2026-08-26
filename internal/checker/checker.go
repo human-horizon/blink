@@ -12,9 +12,27 @@ type Checker struct {
 	Paths       []string
 	Reporter    *diag.Reporter
 	currentPath string
-	fns         map[string]*ast.FnDecl
-	structs     map[string]*ast.StructDecl
-	enums       map[string]*ast.EnumDecl
+	fns         map[string]*fnInfo
+	structs     map[string]*structInfo
+	enums       map[string]*enumInfo
+}
+
+type fnInfo struct {
+	decl       *ast.FnDecl
+	genParams  []string
+	paramTypes []types.Type
+	ret        types.Type
+}
+
+type structInfo struct {
+	decl      *ast.StructDecl
+	genParams []string
+	fields    map[string]types.Type
+}
+
+type enumInfo struct {
+	decl      *ast.EnumDecl
+	genParams []string
 }
 
 // New creates a checker for the given parsed files and their paths.
@@ -23,9 +41,9 @@ func New(files []*ast.File, paths []string, r *diag.Reporter) *Checker {
 		Files:    files,
 		Paths:    paths,
 		Reporter: r,
-		fns:      make(map[string]*ast.FnDecl),
-		structs:  make(map[string]*ast.StructDecl),
-		enums:    make(map[string]*ast.EnumDecl),
+		fns:      make(map[string]*fnInfo),
+		structs:  make(map[string]*structInfo),
+		enums:    make(map[string]*enumInfo),
 	}
 }
 
@@ -40,6 +58,7 @@ func (c *Checker) Check() bool {
 }
 
 func (c *Checker) collect() {
+	// First pass: register names so forward references work.
 	for _, f := range c.Files {
 		for _, d := range f.Decls {
 			switch decl := d.(type) {
@@ -47,21 +66,37 @@ func (c *Checker) collect() {
 				if _, ok := c.fns[decl.Name]; ok {
 					c.errorf(decl.Pos, "duplicate function `%s`", decl.Name)
 				} else {
-					c.fns[decl.Name] = decl
+					c.fns[decl.Name] = &fnInfo{decl: decl, genParams: decl.GenParams}
 				}
 			case *ast.StructDecl:
 				if _, ok := c.structs[decl.Name]; ok {
 					c.errorf(decl.Pos, "duplicate struct `%s`", decl.Name)
 				} else {
-					c.structs[decl.Name] = decl
+					c.structs[decl.Name] = &structInfo{decl: decl, genParams: decl.GenParams}
 				}
 			case *ast.EnumDecl:
 				if _, ok := c.enums[decl.Name]; ok {
 					c.errorf(decl.Pos, "duplicate enum `%s`", decl.Name)
 				} else {
-					c.enums[decl.Name] = decl
+					c.enums[decl.Name] = &enumInfo{decl: decl, genParams: decl.GenParams}
 				}
 			}
+		}
+	}
+	// Second pass: resolve types now that all names are known.
+	for _, info := range c.fns {
+		for _, p := range info.decl.Params {
+			info.paramTypes = append(info.paramTypes, c.resolveType(p.Ty, c.currentPath, info.decl.GenParams))
+		}
+		info.ret = types.Unit
+		if info.decl.Ret != nil {
+			info.ret = c.resolveType(info.decl.Ret, c.currentPath, info.decl.GenParams)
+		}
+	}
+	for _, info := range c.structs {
+		info.fields = make(map[string]types.Type)
+		for _, f := range info.decl.Fields {
+			info.fields[f.Name] = c.resolveType(f.Ty, c.currentPath, info.decl.GenParams)
 		}
 	}
 }
@@ -77,21 +112,18 @@ func (c *Checker) checkFile(f *ast.File, path string) {
 
 func (c *Checker) checkFn(fn *ast.FnDecl, path string) {
 	env := newEnv(nil)
-	var paramTypes []types.Type
-	for _, p := range fn.Params {
-		ty := c.resolveType(p.Ty, path)
-		paramTypes = append(paramTypes, ty)
-		env.set(p.Name, ty)
+	info := c.fns[fn.Name]
+	if info == nil {
+		c.errorf(fn.Pos, "internal error: missing function info for `%s`", fn.Name)
+		return
 	}
-	var ret types.Type = types.Unit
-	if fn.Ret != nil {
-		ret = c.resolveType(fn.Ret, path)
+	for i, p := range fn.Params {
+		env.set(p.Name, info.paramTypes[i])
 	}
-	bodyTy := c.checkBlock(fn.Body, env, ret, path)
-	if !bodyTy.Equals(ret) && !isError(bodyTy) {
-		c.errorf(PosOf(fn.Body), "expected `%s`, found `%s`", ret, bodyTy)
+	bodyTy := c.checkBlock(fn.Body, env, info.ret, path)
+	if !bodyTy.Equals(info.ret) && !isError(bodyTy) {
+		c.errorf(PosOf(fn.Body), "expected `%s`, found `%s`", info.ret, bodyTy)
 	}
-	_ = paramTypes
 }
 
 func (c *Checker) checkBlock(block *ast.BlockExpr, env *environment, ret types.Type, path string) types.Type {
@@ -100,6 +132,11 @@ func (c *Checker) checkBlock(block *ast.BlockExpr, env *environment, ret types.T
 		c.checkStmt(s, local, ret, path)
 	}
 	if block.Result != nil {
+		if lit, ok := block.Result.(*ast.StructLit); ok {
+			if applied, ok := ret.(*types.Applied); ok {
+				return c.checkStructLitWithAnnotation(lit, applied, local, path)
+			}
+		}
 		return c.checkExpr(block.Result, local, path)
 	}
 	return types.Unit
@@ -108,9 +145,17 @@ func (c *Checker) checkBlock(block *ast.BlockExpr, env *environment, ret types.T
 func (c *Checker) checkStmt(s ast.Stmt, env *environment, ret types.Type, path string) {
 	switch st := s.(type) {
 	case *ast.LetStmt:
-		valTy := c.checkExpr(st.Value, env, path)
+		var annot types.Type
 		if st.Ty != nil {
-			annot := c.resolveType(st.Ty, path)
+			annot = c.resolveType(st.Ty, path, nil)
+		}
+		var valTy types.Type
+		if lit, ok := st.Value.(*ast.StructLit); ok && annot != nil {
+			valTy = c.checkStructLitWithAnnotation(lit, annot, env, path)
+		} else {
+			valTy = c.checkExpr(st.Value, env, path)
+		}
+		if annot != nil {
 			if !annot.Equals(valTy) && !isError(valTy) {
 				c.errorf(PosOf(st.Value), "expected `%s`, found `%s`", annot, valTy)
 			}
@@ -121,7 +166,15 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, ret types.Type, path s
 	case *ast.ReturnStmt:
 		var ty types.Type = types.Unit
 		if st.Expr != nil {
-			ty = c.checkExpr(st.Expr, env, path)
+			if lit, ok := st.Expr.(*ast.StructLit); ok {
+				if applied, ok := ret.(*types.Applied); ok {
+					ty = c.checkStructLitWithAnnotation(lit, applied, env, path)
+				} else {
+					ty = c.checkExpr(st.Expr, env, path)
+				}
+			} else {
+				ty = c.checkExpr(st.Expr, env, path)
+			}
 		}
 		if !ty.Equals(ret) && !isError(ty) {
 			c.errorf(st.Pos, "expected `%s`, found `%s`", ret, ty)
@@ -235,26 +288,29 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, path string) type
 		c.errorf(PosOf(e.Func), "only direct function calls are supported")
 		return &types.Error{}
 	}
-	fn, ok := c.fns[ident.Name]
+	info, ok := c.fns[ident.Name]
 	if !ok {
 		c.errorf(ident.Pos, "cannot find function `%s`", ident.Name)
 		return &types.Error{}
 	}
-	if len(fn.Params) != len(e.Args) {
-		c.errorf(e.Pos, "expected %d arguments, found %d", len(fn.Params), len(e.Args))
+	if len(info.paramTypes) != len(e.Args) {
+		c.errorf(e.Pos, "expected %d arguments, found %d", len(info.paramTypes), len(e.Args))
 		return &types.Error{}
 	}
+	mapping := make(map[string]types.Type)
 	for i, arg := range e.Args {
 		argTy := c.checkExpr(arg, env, path)
-		paramTy := c.resolveType(fn.Params[i].Ty, path)
-		if !argTy.Equals(paramTy) && !isError(argTy) {
+		paramTy := info.paramTypes[i]
+		if !types.Unify(paramTy, argTy, mapping) && !isError(argTy) {
 			c.errorf(PosOf(arg), "expected `%s`, found `%s`", paramTy, argTy)
 		}
 	}
-	if fn.Ret != nil {
-		return c.resolveType(fn.Ret, path)
+	for _, name := range info.genParams {
+		if _, ok := mapping[name]; !ok {
+			c.errorf(e.Pos, "cannot infer type parameter `%s`", name)
+		}
 	}
-	return types.Unit
+	return types.Substitute(info.ret, mapping)
 }
 
 func (c *Checker) checkIf(e *ast.IfExpr, env *environment, path string) types.Type {
@@ -275,25 +331,52 @@ func (c *Checker) checkIf(e *ast.IfExpr, env *environment, path string) types.Ty
 
 func (c *Checker) checkField(e *ast.FieldExpr, env *environment, path string) types.Type {
 	base := c.checkExpr(e.Expr, env, path)
-	named, ok := base.(*types.Named)
-	if !ok {
+	switch b := base.(type) {
+	case *types.Named:
+		return c.fieldType(b.Name, nil, e.Field, e)
+	case *types.Applied:
+		if named, ok := b.Base.(*types.Named); ok {
+			return c.fieldType(named.Name, b.Args, e.Field, e)
+		}
+		if !isError(base) {
+			c.errorf(PosOf(e.Expr), "expected struct, found `%s`", base)
+		}
+		return &types.Error{}
+	default:
 		if !isError(base) {
 			c.errorf(PosOf(e.Expr), "expected struct, found `%s`", base)
 		}
 		return &types.Error{}
 	}
-	st, ok := c.structs[named.Name]
+}
+
+func (c *Checker) fieldType(name string, args []types.Type, field string, e ast.Expr) types.Type {
+	st, ok := c.structs[name]
 	if !ok {
-		c.errorf(PosOf(e.Expr), "unknown type `%s`", named.Name)
+		c.errorf(PosOf(e), "unknown type `%s`", name)
 		return &types.Error{}
 	}
-	for _, f := range st.Fields {
-		if f.Name == e.Field {
-			return c.resolveType(f.Ty, path)
-		}
+	fty, ok := st.fields[field]
+	if !ok {
+		c.errorf(PosOf(e), "no field `%s` on struct `%s`", field, name)
+		return &types.Error{}
 	}
-	c.errorf(e.Pos, "no field `%s` on struct `%s`", e.Field, named.Name)
-	return &types.Error{}
+	if len(args) > 0 {
+		if len(st.genParams) != len(args) {
+			c.errorf(PosOf(e), "expected %d generic arguments, found %d", len(st.genParams), len(args))
+			return &types.Error{}
+		}
+		mapping := make(map[string]types.Type)
+		for i, p := range st.genParams {
+			mapping[p] = args[i]
+		}
+		return types.Substitute(fty, mapping)
+	}
+	if len(st.genParams) > 0 {
+		c.errorf(PosOf(e), "struct `%s` requires generic arguments", name)
+		return &types.Error{}
+	}
+	return fty
 }
 
 func (c *Checker) checkIndex(e *ast.IndexExpr, env *environment, path string) types.Type {
@@ -318,15 +401,54 @@ func (c *Checker) checkStructLit(e *ast.StructLit, env *environment, path string
 		c.errorf(e.Pos, "unknown struct `%s`", e.Name)
 		return &types.Error{}
 	}
+	if len(st.genParams) > 0 {
+		c.errorf(e.Pos, "cannot infer generic arguments for struct `%s`; annotate with type", e.Name)
+		return &types.Error{}
+	}
+	return c.checkStructLitFields(e, st, nil, env, path)
+}
+
+func (c *Checker) checkStructLitWithAnnotation(e *ast.StructLit, annot types.Type, env *environment, path string) types.Type {
+	applied, ok := annot.(*types.Applied)
+	if !ok {
+		return c.checkStructLit(e, env, path)
+	}
+	named, ok := applied.Base.(*types.Named)
+	if !ok {
+		c.errorf(e.Pos, "expected struct type, found `%s`", applied.Base)
+		return &types.Error{}
+	}
+	st, ok := c.structs[named.Name]
+	if !ok {
+		c.errorf(e.Pos, "unknown struct `%s`", named.Name)
+		return &types.Error{}
+	}
+	if len(st.genParams) != len(applied.Args) {
+		c.errorf(e.Pos, "expected %d generic arguments, found %d", len(st.genParams), len(applied.Args))
+		return &types.Error{}
+	}
+	return c.checkStructLitFields(e, st, applied.Args, env, path)
+}
+
+func (c *Checker) checkStructLitFields(e *ast.StructLit, st *structInfo, args []types.Type, env *environment, path string) types.Type {
 	fieldMap := make(map[string]types.Type)
-	for _, f := range st.Fields {
-		fieldMap[f.Name] = c.resolveType(f.Ty, path)
+	for name, fty := range st.fields {
+		fieldMap[name] = fty
+	}
+	if len(args) > 0 {
+		mapping := make(map[string]types.Type)
+		for i, p := range st.genParams {
+			mapping[p] = args[i]
+		}
+		for name, fty := range fieldMap {
+			fieldMap[name] = types.Substitute(fty, mapping)
+		}
 	}
 	provided := make(map[string]bool)
 	for _, init := range e.Fields {
 		expected, ok := fieldMap[init.Name]
 		if !ok {
-			c.errorf(init.Pos, "unknown field `%s` on struct `%s`", init.Name, e.Name)
+			c.errorf(init.Pos, "unknown field `%s` on struct `%s`", init.Name, st.decl.Name)
 			continue
 		}
 		valTy := c.checkExpr(init.Value, env, path)
@@ -337,10 +459,17 @@ func (c *Checker) checkStructLit(e *ast.StructLit, env *environment, path string
 	}
 	for name := range fieldMap {
 		if !provided[name] {
-			c.errorf(e.Pos, "missing field `%s` in initializer of struct `%s`", name, e.Name)
+			c.errorf(e.Pos, "missing field `%s` in initializer of struct `%s`", name, st.decl.Name)
 		}
 	}
-	return &types.Named{Name: e.Name}
+	if len(args) > 0 {
+		return appliedOf(st.decl.Name, args)
+	}
+	return &types.Named{Name: st.decl.Name}
+}
+
+func appliedOf(name string, args []types.Type) types.Type {
+	return &types.Applied{Base: &types.Named{Name: name}, Args: args}
 }
 
 func (c *Checker) checkArrayLit(e *ast.ArrayLit, env *environment, path string) types.Type {
@@ -358,7 +487,7 @@ func (c *Checker) checkArrayLit(e *ast.ArrayLit, env *environment, path string) 
 	return &types.Array{Elem: elemTy, Len: int64(len(e.Elems))}
 }
 
-func (c *Checker) resolveType(t ast.Type, path string) types.Type {
+func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types.Type {
 	switch ty := t.(type) {
 	case *ast.NamedType:
 		switch ty.Name {
@@ -367,25 +496,47 @@ func (c *Checker) resolveType(t ast.Type, path string) types.Type {
 		case "bool":
 			return types.Bool
 		default:
+			if contains(genParams, ty.Name) {
+				return &types.Generic{Name: ty.Name}
+			}
+			var args []types.Type
+			for _, a := range ty.Args {
+				args = append(args, c.resolveType(a, path, genParams))
+			}
 			if _, ok := c.structs[ty.Name]; ok {
+				if len(args) > 0 {
+					return &types.Applied{Base: &types.Named{Name: ty.Name}, Args: args}
+				}
 				return &types.Named{Name: ty.Name}
 			}
 			if _, ok := c.enums[ty.Name]; ok {
+				if len(args) > 0 {
+					return &types.Applied{Base: &types.Named{Name: ty.Name}, Args: args}
+				}
 				return &types.Named{Name: ty.Name}
 			}
 			c.errorf(ty.Pos, "unknown type `%s`", ty.Name)
 			return &types.Error{}
 		}
 	case *ast.RefType:
-		elem := c.resolveType(ty.Elem, path)
+		elem := c.resolveType(ty.Elem, path, genParams)
 		return &types.Ref{Elem: elem, IsMut: ty.IsMut}
 	case *ast.ArrayType:
-		elem := c.resolveType(ty.Elem, path)
+		elem := c.resolveType(ty.Elem, path, genParams)
 		return &types.Array{Elem: elem, Len: ty.Len}
 	default:
 		c.errorf(PosOf(t), "unsupported type")
 		return &types.Error{}
 	}
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Checker) errorf(pos ast.Pos, format string, args ...interface{}) {
