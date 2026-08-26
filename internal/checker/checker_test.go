@@ -156,3 +156,71 @@ fn main() -> bool {
 		t.Fatal("expected type error")
 	}
 }
+
+func TestSharedBorrow(t *testing.T) {
+	src := `
+fn main() -> i32 {
+    let mut x: i32 = 1;
+    let a = &x;
+    let b = &x;
+    *a + *b
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
+func TestMutableBorrowBlocksShared(t *testing.T) {
+	src := `
+fn main() {
+    let mut x: i32 = 1;
+    let a = &mut x;
+    let b = &x;
+    *a = *b;
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if c.Check() {
+		t.Fatal("expected borrow error")
+	}
+}
+
+func TestUseAfterMove(t *testing.T) {
+	src := `
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    p.x
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if c.Check() {
+		t.Fatal("expected borrow error")
+	}
+}
+
+func TestAssignment(t *testing.T) {
+	src := `
+fn main() -> i32 {
+    let mut x: i32 = 1;
+    x = 5;
+    x
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}

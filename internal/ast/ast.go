@@ -106,12 +106,23 @@ func (BlockExpr) exprNode() {}
 type LetStmt struct {
 	Pos   Pos
 	Name  string
+	IsMut bool
 	Ty    Type // nil if inferred
 	Value Expr
 }
 
 func (LetStmt) astNode()  {}
 func (LetStmt) stmtNode() {}
+
+// AssignStmt is an assignment statement.
+type AssignStmt struct {
+	Pos   Pos
+	Left  Expr
+	Right Expr
+}
+
+func (AssignStmt) astNode()  {}
+func (AssignStmt) stmtNode() {}
 
 // ExprStmt wraps an expression as a statement.
 type ExprStmt struct {

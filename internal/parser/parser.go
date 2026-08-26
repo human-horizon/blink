@@ -263,53 +263,58 @@ func (p *Parser) parseBlock() *ast.BlockExpr {
 			p.next()
 			continue
 		}
-		if isTrailingExprStart(p.tok.Kind) {
-			expr := p.parseExpr()
-			if p.tok.Kind == lexer.Semi {
-				stmts = append(stmts, &ast.ExprStmt{Expr: expr})
-				p.next()
-			} else {
-				result = expr
-				if p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
-					p.setErr("expected `}` or `;` after expression")
-				}
-			}
-		} else {
-			stmts = append(stmts, p.parseStmt())
+		stmt, hadSemi := p.parseStmt()
+		if stmt == nil {
+			break
 		}
+		if !hadSemi && (p.tok.Kind == lexer.RBrace || p.tok.Kind == lexer.EOF) {
+			if es, ok := stmt.(*ast.ExprStmt); ok {
+				result = es.Expr
+				break
+			}
+		}
+		stmts = append(stmts, stmt)
 	}
 	p.expect(lexer.RBrace)
 	return &ast.BlockExpr{Pos: pos, Stmts: stmts, Result: result}
 }
 
-func isTrailingExprStart(kind lexer.TokenKind) bool {
-	switch kind {
-	case lexer.Ident, lexer.IntLit, lexer.True, lexer.False, lexer.StringLit,
-		lexer.LParen, lexer.LBrace, lexer.LBracket, lexer.Minus, lexer.Bang:
-		return true
-	}
-	return false
-}
-
-func (p *Parser) parseStmt() ast.Stmt {
+// parseStmt parses a statement. The returned bool is true if a semicolon was consumed.
+func (p *Parser) parseStmt() (ast.Stmt, bool) {
 	if p.err != nil {
-		return nil
+		return nil, false
 	}
 	switch p.tok.Kind {
 	case lexer.Let:
-		return p.parseLetStmt()
+		return p.parseLetStmt(), true
 	case lexer.Return:
-		return p.parseReturnStmt()
+		return p.parseReturnStmt(), true
 	case lexer.While:
-		return p.parseWhileStmt()
+		return p.parseWhileStmt(), true
 	case lexer.If:
-		return &ast.ExprStmt{Expr: p.parseIfExpr()}
-	default:
-		expr := p.parseExpr()
+		stmt := &ast.ExprStmt{Expr: p.parseIfExpr()}
 		if p.tok.Kind == lexer.Semi {
 			p.next()
+			return stmt, true
 		}
-		return &ast.ExprStmt{Expr: expr}
+		return stmt, false
+	default:
+		expr := p.parseExpr()
+		if p.tok.Kind == lexer.Eq {
+			pos := ast.Pos(p.tok.Pos)
+			p.next()
+			right := p.parseExpr()
+			if p.tok.Kind == lexer.Semi {
+				p.next()
+				return &ast.AssignStmt{Pos: pos, Left: expr, Right: right}, true
+			}
+			return &ast.AssignStmt{Pos: pos, Left: expr, Right: right}, false
+		}
+		if p.tok.Kind == lexer.Semi {
+			p.next()
+			return &ast.ExprStmt{Expr: expr}, true
+		}
+		return &ast.ExprStmt{Expr: expr}, false
 	}
 }
 
@@ -319,6 +324,11 @@ func (p *Parser) parseLetStmt() ast.Stmt {
 	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // let
+	isMut := false
+	if p.tok.Kind == lexer.Ident && p.tok.Text == "mut" {
+		isMut = true
+		p.next()
+	}
 	name := p.expect(lexer.Ident)
 	var ty ast.Type
 	if p.tok.Kind == lexer.Colon {
@@ -330,7 +340,7 @@ func (p *Parser) parseLetStmt() ast.Stmt {
 	if p.tok.Kind == lexer.Semi {
 		p.next()
 	}
-	return &ast.LetStmt{Pos: pos, Name: name.Text, Ty: ty, Value: value}
+	return &ast.LetStmt{Pos: pos, Name: name.Text, IsMut: isMut, Ty: ty, Value: value}
 }
 
 func (p *Parser) parseReturnStmt() ast.Stmt {
@@ -444,10 +454,20 @@ func (p *Parser) parseUnary() ast.Expr {
 		return nil
 	}
 	switch p.tok.Kind {
-	case lexer.Minus, lexer.Bang:
+	case lexer.Minus, lexer.Bang, lexer.Star:
 		pos := ast.Pos(p.tok.Pos)
 		op := p.tok.Text
 		p.next()
+		operand := p.parseUnary()
+		return &ast.UnaryExpr{Pos: pos, Op: op, Operand: operand}
+	case lexer.And:
+		pos := ast.Pos(p.tok.Pos)
+		op := "&"
+		p.next()
+		if p.tok.Kind == lexer.Ident && p.tok.Text == "mut" {
+			op = "&mut"
+			p.next()
+		}
 		operand := p.parseUnary()
 		return &ast.UnaryExpr{Pos: pos, Op: op, Operand: operand}
 	default:

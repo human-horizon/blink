@@ -180,6 +180,12 @@ func formatInt(n int64) string {
 	return string(digits)
 }
 
+// IsCopy returns true if values of the type are implicitly copied on move.
+func IsCopy(t Type) bool {
+	_, ok := t.(*Builtin)
+	return ok
+}
+
 // Error is a sentinel type used when an expression has an error type.
 type Error struct{}
 
