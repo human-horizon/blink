@@ -52,9 +52,10 @@ func (FnDecl) declNode() {}
 
 // Param represents a function parameter.
 type Param struct {
-	Pos  Pos
-	Name string
-	Ty   Type
+	Pos    Pos
+	Name   string
+	Ty     Type
+	IsSelf bool
 }
 
 // StructDecl represents a struct declaration.
@@ -91,6 +92,27 @@ type Variant struct {
 	Pos  Pos
 	Name string
 }
+
+// TraitDecl represents a trait declaration.
+type TraitDecl struct {
+	Pos     Pos
+	Name    string
+	Methods []*FnDecl
+}
+
+func (TraitDecl) astNode()  {}
+func (TraitDecl) declNode() {}
+
+// ImplDecl represents an impl block (trait or inherent).
+type ImplDecl struct {
+	Pos     Pos
+	Trait   string // empty for inherent impl
+	ForType Type
+	Methods []*FnDecl
+}
+
+func (ImplDecl) astNode()  {}
+func (ImplDecl) declNode() {}
 
 // BlockExpr is a block statement/expression.
 type BlockExpr struct {

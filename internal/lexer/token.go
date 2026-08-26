@@ -20,6 +20,9 @@ const (
 	Return
 	Struct
 	Enum
+	Trait
+	Impl
+	Self
 	I32
 	Bool
 
@@ -47,6 +50,7 @@ const (
 	Semi
 	Comma
 	Colon
+	ColonColon
 	Dot
 	Arrow // ->
 )
@@ -67,6 +71,10 @@ var keywords = map[string]TokenKind{
 	"return": Return,
 	"struct": Struct,
 	"enum":   Enum,
+	"trait":  Trait,
+	"impl":   Impl,
+	"self":   Self,
+	"Self":   Self,
 	"i32":    I32,
 	"bool":   Bool,
 	"true":   True,

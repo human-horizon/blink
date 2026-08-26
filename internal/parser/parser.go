@@ -84,6 +84,10 @@ func (p *Parser) parseDecl() ast.Decl {
 		return p.parseStructDecl()
 	case lexer.Enum:
 		return p.parseEnumDecl()
+	case lexer.Trait:
+		return p.parseTraitDecl()
+	case lexer.Impl:
+		return p.parseImplDecl()
 	default:
 		p.setErr("unexpected token %v at top level", p.tok.Kind)
 		return nil
@@ -101,11 +105,7 @@ func (p *Parser) parseFnDecl() ast.Decl {
 	p.expect(lexer.LParen)
 	var params []ast.Param
 	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
-		paramPos := ast.Pos(p.tok.Pos)
-		paramName := p.expect(lexer.Ident)
-		p.expect(lexer.Colon)
-		ty := p.parseType()
-		params = append(params, ast.Param{Pos: paramPos, Name: paramName.Text, Ty: ty})
+		params = append(params, p.parseParam())
 		if p.tok.Kind == lexer.Comma {
 			p.next()
 		}
@@ -118,6 +118,100 @@ func (p *Parser) parseFnDecl() ast.Decl {
 	}
 	body := p.parseBlock()
 	return &ast.FnDecl{Pos: pos, Name: name.Text, GenParams: genParams, Params: params, Ret: ret, Body: body}
+}
+
+func (p *Parser) parseParam() ast.Param {
+	paramPos := ast.Pos(p.tok.Pos)
+	if p.tok.Kind == lexer.And {
+		p.next()
+		if p.tok.Kind == lexer.Ident && p.tok.Text == "self" {
+			p.next()
+			return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
+		}
+		p.setErr("expected `self` after `&`")
+		return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
+	}
+	if p.tok.Kind == lexer.Ident && p.tok.Text == "self" {
+		p.next()
+		return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
+	}
+	paramName := p.expect(lexer.Ident)
+	p.expect(lexer.Colon)
+	ty := p.parseType()
+	return ast.Param{Pos: paramPos, Name: paramName.Text, Ty: ty}
+}
+
+func (p *Parser) parseTraitDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // trait
+	name := p.expect(lexer.Ident)
+	p.expect(lexer.LBrace)
+	var methods []*ast.FnDecl
+	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
+		fn := p.parseFnSig().(*ast.FnDecl)
+		p.expect(lexer.Semi)
+		methods = append(methods, fn)
+	}
+	p.expect(lexer.RBrace)
+	return &ast.TraitDecl{Pos: pos, Name: name.Text, Methods: methods}
+}
+
+func (p *Parser) parseImplDecl() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // impl
+	firstType := p.parseType()
+	var trait string
+	var forType ast.Type
+	if p.tok.Kind == lexer.For {
+		p.next()
+		forType = p.parseType()
+		if named, ok := firstType.(*ast.NamedType); ok {
+			trait = named.Name
+		} else {
+			p.setErr("expected trait name before `for`")
+		}
+	} else {
+		forType = firstType
+	}
+	p.expect(lexer.LBrace)
+	var methods []*ast.FnDecl
+	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
+		fn := p.parseFnDecl().(*ast.FnDecl)
+		methods = append(methods, fn)
+	}
+	p.expect(lexer.RBrace)
+	return &ast.ImplDecl{Pos: pos, Trait: trait, ForType: forType, Methods: methods}
+}
+
+func (p *Parser) parseFnSig() ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.expect(lexer.Fn)
+	name := p.expect(lexer.Ident)
+	genParams := p.parseGenericParams()
+	p.expect(lexer.LParen)
+	var params []ast.Param
+	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
+		params = append(params, p.parseParam())
+		if p.tok.Kind == lexer.Comma {
+			p.next()
+		}
+	}
+	p.expect(lexer.RParen)
+	var ret ast.Type
+	if p.tok.Kind == lexer.Arrow {
+		p.next()
+		ret = p.parseType()
+	}
+	return &ast.FnDecl{Pos: pos, Name: name.Text, GenParams: genParams, Params: params, Ret: ret}
 }
 
 func (p *Parser) parseStructDecl() ast.Decl {
@@ -509,8 +603,15 @@ func (p *Parser) parsePrimary() ast.Expr {
 			} else if p.tok.Kind == lexer.Dot {
 				p.next()
 				field := p.expect(lexer.Ident)
-				expr = &ast.FieldExpr{Pos: ast.Pos(field.Pos), Expr: expr, Field: field.Text}
-			} else if p.tok.Kind == lexer.LBracket {
+				if p.tok.Kind == lexer.LParen {
+					expr = p.parseMethodCall(expr, field)
+				} else {
+					expr = &ast.FieldExpr{Pos: ast.Pos(field.Pos), Expr: expr, Field: field.Text}
+				}
+			} else if p.tok.Kind == lexer.ColonColon {
+				p.next()
+				method := p.expect(lexer.Ident)
+				expr = p.parseStaticCall(expr, method)
 				p.next()
 				idx := p.parseExpr()
 				p.expect(lexer.RBracket)
@@ -553,6 +654,18 @@ func (p *Parser) parseCall(fn ast.Expr) ast.Expr {
 	}
 	p.expect(lexer.RParen)
 	return &ast.CallExpr{Pos: pos, Func: fn, Args: args}
+}
+
+func (p *Parser) parseMethodCall(receiver ast.Expr, method lexer.Token) ast.Expr {
+	pos := ast.Pos(method.Pos)
+	field := &ast.FieldExpr{Pos: pos, Expr: receiver, Field: method.Text}
+	return p.parseCall(field)
+}
+
+func (p *Parser) parseStaticCall(tyExpr ast.Expr, method lexer.Token) ast.Expr {
+	pos := ast.Pos(method.Pos)
+	field := &ast.FieldExpr{Pos: pos, Expr: tyExpr, Field: method.Text}
+	return p.parseCall(field)
 }
 
 func (p *Parser) parseStructLitFromName(pos ast.Pos, name string) ast.Expr {

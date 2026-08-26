@@ -73,6 +73,10 @@ func (l *Lexer) Next() Token {
 		return Token{Kind: Comma, Text: ",", Pos: start}
 	case ':':
 		l.pos++
+		if l.peek() == ':' {
+			l.pos++
+			return Token{Kind: ColonColon, Text: "::", Pos: start}
+		}
 		return Token{Kind: Colon, Text: ":", Pos: start}
 	case '.':
 		l.pos++
