@@ -512,7 +512,11 @@ func (p *Parser) parseLetStmt() ast.Stmt {
 		isMut = true
 		p.next()
 	}
-	name := p.expect(lexer.Ident)
+	pat := p.parsePattern()
+	var name string
+	if ident, ok := pat.(*ast.PatIdent); ok {
+		name = ident.Name
+	}
 	var ty ast.Type
 	if p.tok.Kind == lexer.Colon {
 		p.next()
@@ -523,7 +527,48 @@ func (p *Parser) parseLetStmt() ast.Stmt {
 	if p.tok.Kind == lexer.Semi {
 		p.next()
 	}
-	return &ast.LetStmt{Pos: pos, Name: name.Text, IsMut: isMut, Ty: ty, Value: value}
+	return &ast.LetStmt{Pos: pos, Name: name, Pattern: pat, IsMut: isMut, Ty: ty, Value: value}
+}
+
+func (p *Parser) parsePattern() ast.Pattern {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	if p.tok.Kind == lexer.Ident {
+		name := p.tok.Text
+		p.next()
+		if name == "_" {
+			return &ast.PatWildcard{Pos: pos}
+		}
+		if len(name) > 0 && name[0] >= 'A' && name[0] <= 'Z' && p.tok.Kind == lexer.LBrace {
+			return p.parseStructPattern(pos, name)
+		}
+		return &ast.PatIdent{Pos: pos, Name: name}
+	}
+	p.setErr("expected pattern")
+	return nil
+}
+
+func (p *Parser) parseStructPattern(pos ast.Pos, name string) ast.Pattern {
+	p.expect(lexer.LBrace)
+	var fields []ast.PatField
+	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
+		fieldPos := ast.Pos(p.tok.Pos)
+		fieldName := p.expect(lexer.Ident)
+		bindName := ""
+		if p.tok.Kind == lexer.Colon {
+			p.next()
+			bindTok := p.expect(lexer.Ident)
+			bindName = bindTok.Text
+		}
+		fields = append(fields, ast.PatField{Pos: fieldPos, Field: fieldName.Text, BindName: bindName})
+		if p.tok.Kind == lexer.Comma {
+			p.next()
+		}
+	}
+	p.expect(lexer.RBrace)
+	return &ast.PatStruct{Pos: pos, Name: name, Fields: fields}
 }
 
 func (p *Parser) parseReturnStmt() ast.Stmt {

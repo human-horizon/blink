@@ -1125,9 +1125,15 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 			if !annot.Equals(valTy) && !isError(valTy) {
 				c.errorf(PosOf(st.Value), "expected `%s`, found `%s`", annot, valTy)
 			}
-			env.set(st.Name, annot, st.IsMut)
+		}
+		ty := valTy
+		if annot != nil {
+			ty = annot
+		}
+		if st.Pattern != nil {
+			c.checkPattern(st.Pattern, ty, env, st.IsMut, path)
 		} else {
-			env.set(st.Name, valTy, st.IsMut)
+			env.set(st.Name, ty, st.IsMut)
 		}
 	case *ast.AssignStmt:
 		c.checkAssign(st, env, loans, path)
@@ -1155,6 +1161,60 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 		c.checkBlock(st.Body, env, loans, ret, path)
 	case *ast.ExprStmt:
 		c.checkExpr(st.Expr, env, loans, path)
+	}
+}
+
+func (c *Checker) checkPattern(pat ast.Pattern, ty types.Type, env *environment, isMut bool, path string) {
+	switch p := pat.(type) {
+	case *ast.PatIdent:
+		env.set(p.Name, ty, isMut)
+	case *ast.PatWildcard:
+		return
+	case *ast.PatStruct:
+		c.checkStructPattern(p, ty, env, isMut, path)
+	default:
+		c.errorf(PosOf(pat), "unsupported pattern")
+	}
+}
+
+func (c *Checker) checkStructPattern(pat *ast.PatStruct, ty types.Type, env *environment, isMut bool, path string) {
+	key := c.resolveName(pat.Name)
+	st, ok := c.structs[key]
+	if !ok {
+		c.errorf(pat.Pos, "unknown struct `%s`", pat.Name)
+		return
+	}
+	if !c.canAccess(key) {
+		c.errorf(pat.Pos, "cannot access struct `%s`", pat.Name)
+		return
+	}
+	want := &types.Named{Name: st.decl.Name}
+	if len(st.genParams) > 0 {
+		c.errorf(pat.Pos, "generic struct patterns require explicit type annotation")
+		return
+	}
+	if !want.Equals(ty) && !isError(ty) {
+		c.errorf(pat.Pos, "expected `%s`, found `%s`", want, ty)
+		return
+	}
+	provided := make(map[string]bool)
+	for _, f := range pat.Fields {
+		fty, ok := st.fields[f.Field]
+		if !ok {
+			c.errorf(f.Pos, "no field `%s` on struct `%s`", f.Field, st.decl.Name)
+			continue
+		}
+		name := f.Field
+		if f.BindName != "" {
+			name = f.BindName
+		}
+		env.set(name, fty, isMut)
+		provided[f.Field] = true
+	}
+	for name := range st.fields {
+		if !provided[name] {
+			c.errorf(pat.Pos, "missing field `%s` in pattern for struct `%s`", name, st.decl.Name)
+		}
 	}
 }
 

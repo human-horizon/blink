@@ -175,15 +175,58 @@ func (BlockExpr) exprNode() {}
 
 // LetStmt is a let statement.
 type LetStmt struct {
-	Pos   Pos
-	Name  string
-	IsMut bool
-	Ty    Type // nil if inferred
-	Value Expr
+	Pos     Pos
+	Name    string  // legacy direct name; deprecated when Pattern is set
+	Pattern Pattern // optional pattern
+	IsMut   bool
+	Ty      Type // nil if inferred
+	Value   Expr
 }
 
 func (LetStmt) astNode()  {}
 func (LetStmt) stmtNode() {}
+
+// Pattern is a destructuring pattern.
+type Pattern interface {
+	Node
+	patternNode()
+}
+
+// PatIdent matches any value and binds it to a name.
+type PatIdent struct {
+	Pos  Pos
+	Name string
+}
+
+func (PatIdent) astNode()    {}
+func (PatIdent) patternNode() {}
+
+// PatWildcard ignores the matched value.
+type PatWildcard struct {
+	Pos Pos
+}
+
+func (PatWildcard) astNode()    {}
+func (PatWildcard) patternNode() {}
+
+// PatStruct matches a struct and binds its fields.
+type PatStruct struct {
+	Pos    Pos
+	Name   string
+	Fields []PatField
+}
+
+func (PatStruct) astNode()    {}
+func (PatStruct) patternNode() {}
+
+// PatField is a single field binding inside a struct pattern.
+type PatField struct {
+	Pos      Pos
+	Field    string // field name in the struct
+	BindName string // variable name to bind; empty means same as Field
+}
+
+func (PatField) astNode() {}
 
 // AssignStmt is an assignment statement.
 type AssignStmt struct {
