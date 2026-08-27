@@ -110,7 +110,7 @@ func (p *Parser) parseFnDecl(pub bool) ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // fn
 	name := p.expect(lexer.Ident)
-	genParams := p.parseGenericParams()
+	lifeParams, genParams := p.parseParams()
 	p.expect(lexer.LParen)
 	var params []ast.Param
 	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
@@ -126,7 +126,7 @@ func (p *Parser) parseFnDecl(pub bool) ast.Decl {
 		ret = p.parseType()
 	}
 	body := p.parseBlock()
-	return &ast.FnDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Params: params, Ret: ret, Body: body}
+	return &ast.FnDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Params: params, Ret: ret, Body: body}
 }
 
 func (p *Parser) parseParam() ast.Param {
@@ -157,6 +157,7 @@ func (p *Parser) parseTraitDecl(pub bool) ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // trait
 	name := p.expect(lexer.Ident)
+	lifeParams, genParams := p.parseParams()
 	p.expect(lexer.LBrace)
 	var methods []*ast.FnDecl
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
@@ -173,7 +174,7 @@ func (p *Parser) parseTraitDecl(pub bool) ast.Decl {
 		methods = append(methods, fn)
 	}
 	p.expect(lexer.RBrace)
-	return &ast.TraitDecl{Pos: pos, Pub: pub, Name: name.Text, Methods: methods}
+	return &ast.TraitDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Methods: methods}
 }
 
 func (p *Parser) parseImplDecl() ast.Decl {
@@ -265,7 +266,7 @@ func (p *Parser) parseFnSig() ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.expect(lexer.Fn)
 	name := p.expect(lexer.Ident)
-	genParams := p.parseGenericParams()
+	lifeParams, genParams := p.parseParams()
 	p.expect(lexer.LParen)
 	var params []ast.Param
 	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
@@ -280,7 +281,7 @@ func (p *Parser) parseFnSig() ast.Decl {
 		p.next()
 		ret = p.parseType()
 	}
-	return &ast.FnDecl{Pos: pos, Name: name.Text, GenParams: genParams, Params: params, Ret: ret}
+	return &ast.FnDecl{Pos: pos, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Params: params, Ret: ret}
 }
 
 func (p *Parser) parseStructDecl(pub bool) ast.Decl {
@@ -290,7 +291,7 @@ func (p *Parser) parseStructDecl(pub bool) ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // struct
 	name := p.expect(lexer.Ident)
-	genParams := p.parseGenericParams()
+	lifeParams, genParams := p.parseParams()
 	p.expect(lexer.LBrace)
 	var fields []ast.Field
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
@@ -304,7 +305,7 @@ func (p *Parser) parseStructDecl(pub bool) ast.Decl {
 		}
 	}
 	p.expect(lexer.RBrace)
-	return &ast.StructDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Fields: fields}
+	return &ast.StructDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Fields: fields}
 }
 
 func (p *Parser) parseEnumDecl(pub bool) ast.Decl {
@@ -329,21 +330,35 @@ func (p *Parser) parseEnumDecl(pub bool) ast.Decl {
 	return &ast.EnumDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Variants: variants}
 }
 
-func (p *Parser) parseGenericParams() []string {
+func (p *Parser) parseParams() ([]string, []string) {
 	if p.tok.Kind != lexer.Lt {
-		return nil
+		return nil, nil
 	}
 	p.next() // <
-	var params []string
+	var lifetimes []string
+	var generics []string
 	for p.tok.Kind != lexer.Gt && p.tok.Kind != lexer.EOF {
-		t := p.expect(lexer.Ident)
-		params = append(params, t.Text)
+		switch p.tok.Kind {
+		case lexer.Lifetime:
+			lifetimes = append(lifetimes, p.tok.Text)
+			p.next()
+		case lexer.Ident:
+			generics = append(generics, p.tok.Text)
+			p.next()
+		default:
+			p.setErr("expected lifetime or generic parameter")
+		}
 		if p.tok.Kind == lexer.Comma {
 			p.next()
 		}
 	}
 	p.expect(lexer.Gt)
-	return params
+	return lifetimes, generics
+}
+
+func (p *Parser) parseGenericParams() []string {
+	_, generics := p.parseParams()
+	return generics
 }
 
 func (p *Parser) parseTypeArgs() []ast.Type {
@@ -388,13 +403,18 @@ func (p *Parser) parseType() ast.Type {
 	case lexer.And:
 		pos := ast.Pos(p.tok.Pos)
 		p.next()
+		var lifetime string
+		if p.tok.Kind == lexer.Lifetime {
+			lifetime = p.tok.Text
+			p.next()
+		}
 		isMut := false
 		if p.tok.Kind == lexer.Ident && p.tok.Text == "mut" {
 			isMut = true
 			p.next()
 		}
 		elem := p.parseType()
-		return &ast.RefType{Pos: pos, Elem: elem, IsMut: isMut}
+		return &ast.RefType{Pos: pos, Lifetime: lifetime, Elem: elem, IsMut: isMut}
 	case lexer.LBracket:
 		pos := ast.Pos(p.tok.Pos)
 		p.next() // [

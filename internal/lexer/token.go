@@ -28,6 +28,7 @@ const (
 	Use
 	As
 	For
+	Lifetime
 	I32
 	Bool
 

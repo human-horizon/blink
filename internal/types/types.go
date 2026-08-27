@@ -69,8 +69,8 @@ func (a *Applied) Equals(other Type) bool {
 	return true
 }
 
-// Substitute replaces Generic types according to mapping.
-func Substitute(t Type, mapping map[string]Type) Type {
+// Substitute replaces Generic types and lifetimes according to mappings.
+func Substitute(t Type, mapping map[string]Type, lifetimeMapping map[string]string) Type {
 	switch ty := t.(type) {
 	case *Generic:
 		if sub, ok := mapping[ty.Name]; ok {
@@ -78,13 +78,19 @@ func Substitute(t Type, mapping map[string]Type) Type {
 		}
 		return ty
 	case *Ref:
-		return &Ref{Elem: Substitute(ty.Elem, mapping), IsMut: ty.IsMut}
+		lt := ty.Lifetime
+		if lifetimeMapping != nil {
+			if sub, ok := lifetimeMapping[ty.Lifetime]; ok {
+				lt = sub
+			}
+		}
+		return &Ref{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), IsMut: ty.IsMut, Lifetime: lt}
 	case *Array:
-		return &Array{Elem: Substitute(ty.Elem, mapping), Len: ty.Len}
+		return &Array{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), Len: ty.Len}
 	case *Applied:
 		args := make([]Type, len(ty.Args))
 		for i, arg := range ty.Args {
-			args[i] = Substitute(arg, mapping)
+			args[i] = Substitute(arg, mapping, lifetimeMapping)
 		}
 		return &Applied{Base: ty.Base, Args: args}
 	default:
@@ -93,7 +99,8 @@ func Substitute(t Type, mapping map[string]Type) Type {
 }
 
 // Unify tries to find substitutions for params that make want equal to got.
-func Unify(want Type, got Type, mapping map[string]Type) bool {
+// lifetimeMapping records lifetime parameter substitutions.
+func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[string]string) bool {
 	if g, ok := want.(*Generic); ok {
 		if existing, ok := mapping[g.Name]; ok {
 			return existing.Equals(got)
@@ -101,13 +108,36 @@ func Unify(want Type, got Type, mapping map[string]Type) bool {
 		mapping[g.Name] = got
 		return true
 	}
+	if wantRef, ok := want.(*Ref); ok {
+		gotRef, ok := got.(*Ref)
+		if !ok || wantRef.IsMut != gotRef.IsMut {
+			return false
+		}
+		if wantRef.Lifetime != gotRef.Lifetime {
+			if lifetimeMapping == nil {
+				return false
+			}
+			if wantRef.Lifetime != "" && wantRef.Lifetime[0] == '\'' {
+				if existing, ok := lifetimeMapping[wantRef.Lifetime]; ok {
+					if existing != gotRef.Lifetime {
+						return false
+					}
+				} else {
+					lifetimeMapping[wantRef.Lifetime] = gotRef.Lifetime
+				}
+			} else {
+				return false
+			}
+		}
+		return Unify(wantRef.Elem, gotRef.Elem, mapping, lifetimeMapping)
+	}
 	if wantApp, ok := want.(*Applied); ok {
 		gotApp, ok := got.(*Applied)
 		if !ok || !wantApp.Base.Equals(gotApp.Base) || len(wantApp.Args) != len(gotApp.Args) {
 			return false
 		}
 		for i, arg := range wantApp.Args {
-			if !Unify(arg, gotApp.Args[i], mapping) {
+			if !Unify(arg, gotApp.Args[i], mapping, lifetimeMapping) {
 				return false
 			}
 		}
@@ -130,20 +160,25 @@ func (n *Named) Equals(other Type) bool {
 
 // Ref is a reference type.
 type Ref struct {
-	Elem  Type
-	IsMut bool
+	Elem     Type
+	IsMut    bool
+	Lifetime string
 }
 
 func (r *Ref) typeMarker() {}
 func (r *Ref) String() string {
+	mut := ""
 	if r.IsMut {
-		return "&mut " + r.Elem.String()
+		mut = "mut "
 	}
-	return "&" + r.Elem.String()
+	if r.Lifetime != "" {
+		return "&" + r.Lifetime + " " + mut + r.Elem.String()
+	}
+	return "&" + mut + r.Elem.String()
 }
 func (r *Ref) Equals(other Type) bool {
 	o, ok := other.(*Ref)
-	return ok && o.IsMut == r.IsMut && r.Elem.Equals(o.Elem)
+	return ok && o.IsMut == r.IsMut && o.Lifetime == r.Lifetime && r.Elem.Equals(o.Elem)
 }
 
 // Array is a fixed-size array type.

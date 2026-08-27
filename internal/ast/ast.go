@@ -46,13 +46,14 @@ type File struct {
 
 // FnDecl represents a function declaration.
 type FnDecl struct {
-	Pos       Pos
-	Pub       bool
-	Name      string
-	GenParams []string
-	Params    []Param
-	Ret       Type // nil if no explicit return type (-> ())
-	Body      *BlockExpr
+	Pos            Pos
+	Pub            bool
+	Name           string
+	LifetimeParams []string
+	GenParams      []string
+	Params         []Param
+	Ret            Type // nil if no explicit return type (-> ())
+	Body           *BlockExpr
 }
 
 func (FnDecl) astNode()     {}
@@ -70,11 +71,12 @@ type Param struct {
 
 // StructDecl represents a struct declaration.
 type StructDecl struct {
-	Pos       Pos
-	Pub       bool
-	Name      string
-	GenParams []string
-	Fields    []Field
+	Pos            Pos
+	Pub            bool
+	Name           string
+	LifetimeParams []string
+	GenParams      []string
+	Fields         []Field
 }
 
 func (StructDecl) astNode()  {}
@@ -111,10 +113,12 @@ type Variant struct {
 
 // TraitDecl represents a trait declaration.
 type TraitDecl struct {
-	Pos     Pos
-	Pub     bool
-	Name    string
-	Methods []*FnDecl
+	Pos            Pos
+	Pub            bool
+	Name           string
+	LifetimeParams []string
+	GenParams      []string
+	Methods        []*FnDecl
 }
 
 func (TraitDecl) astNode()  {}
@@ -364,6 +368,7 @@ func (NamedType) typeNode() {}
 // RefType is a reference type.
 type RefType struct {
 	Pos      Pos
+	Lifetime string // empty if anonymous
 	Elem     Type
 	IsMut    bool
 }

@@ -27,17 +27,19 @@ type Checker struct {
 }
 
 type fnInfo struct {
-	decl       *ast.FnDecl
-	genParams  []string
-	paramTypes []types.Type
-	ret        types.Type
-	selfType   types.Type
+	decl           *ast.FnDecl
+	lifetimeParams []string
+	genParams      []string
+	paramTypes     []types.Type
+	ret            types.Type
+	selfType       types.Type
 }
 
 type structInfo struct {
-	decl      *ast.StructDecl
-	genParams []string
-	fields    map[string]types.Type
+	decl           *ast.StructDecl
+	lifetimeParams []string
+	genParams      []string
+	fields         map[string]types.Type
 }
 
 type enumInfo struct {
@@ -112,7 +114,7 @@ func (c *Checker) collect() {
 				if _, ok := c.fns[key]; ok {
 					c.errorf(decl.Pos, "duplicate function `%s`", decl.Name)
 				} else {
-					c.fns[key] = &fnInfo{decl: decl, genParams: decl.GenParams}
+					c.fns[key] = &fnInfo{decl: decl, lifetimeParams: decl.LifetimeParams, genParams: decl.GenParams}
 					c.itemFile[key] = i
 				}
 			case *ast.StructDecl:
@@ -120,7 +122,7 @@ func (c *Checker) collect() {
 				if _, ok := c.structs[key]; ok {
 					c.errorf(decl.Pos, "duplicate struct `%s`", decl.Name)
 				} else {
-					c.structs[key] = &structInfo{decl: decl, genParams: decl.GenParams}
+					c.structs[key] = &structInfo{decl: decl, lifetimeParams: decl.LifetimeParams, genParams: decl.GenParams}
 					c.itemFile[key] = i
 				}
 			case *ast.EnumDecl:
@@ -156,7 +158,7 @@ func (c *Checker) collect() {
 	}
 	for _, info := range c.traits {
 		for _, m := range info.decl.Methods {
-			minfo := &fnInfo{decl: m, genParams: m.GenParams}
+			minfo := &fnInfo{decl: m, lifetimeParams: m.LifetimeParams, genParams: m.GenParams}
 			selfTy := &types.Ref{Elem: &types.Generic{Name: "Self"}, IsMut: false}
 			c.fillMethodInfo(minfo, m, []string{"Self"}, selfTy)
 			info.methods[m.Name] = minfo
@@ -336,11 +338,11 @@ func (c *Checker) substSelf(info *fnInfo, forType types.Type) *fnInfo {
 	mapping := map[string]types.Type{"Self": forType}
 	copy := &fnInfo{decl: info.decl, genParams: info.genParams}
 	for _, p := range info.paramTypes {
-		copy.paramTypes = append(copy.paramTypes, types.Substitute(p, mapping))
+		copy.paramTypes = append(copy.paramTypes, types.Substitute(p, mapping, nil))
 	}
-	copy.ret = types.Substitute(info.ret, mapping)
+	copy.ret = types.Substitute(info.ret, mapping, nil)
 	if info.selfType != nil {
-		copy.selfType = types.Substitute(info.selfType, mapping)
+		copy.selfType = types.Substitute(info.selfType, mapping, nil)
 	}
 	return copy
 }
@@ -375,6 +377,7 @@ func (c *Checker) checkFn(fn *ast.FnDecl, path string, idx int) {
 	if !bodyTy.Equals(info.ret) && !isError(bodyTy) {
 		c.errorf(PosOf(fn.Body), "expected `%s`, found `%s`", info.ret, bodyTy)
 	}
+	c.checkLifetimes(fn.Pos, info.ret, info.lifetimeParams)
 }
 
 func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
@@ -697,13 +700,14 @@ func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type
 		return &types.Error{}
 	}
 	mapping := make(map[string]types.Type)
+	lifetimeMapping := make(map[string]string)
 	if receiver != nil {
 		mapping["Self"] = receiver
 	}
 	for i, arg := range args {
 		argTy := c.checkExpr(arg, env, loans, path)
 		paramTy := info.paramTypes[i]
-		if !types.Unify(paramTy, argTy, mapping) && !isError(argTy) {
+		if !types.Unify(paramTy, argTy, mapping, lifetimeMapping) && !isError(argTy) {
 			c.errorf(PosOf(args[i]), "expected `%s`, found `%s`", paramTy, argTy)
 		}
 	}
@@ -712,7 +716,7 @@ func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type
 			c.errorf(PosOf(args[0]), "cannot infer type parameter `%s`", name)
 		}
 	}
-	return types.Substitute(info.ret, mapping)
+	return types.Substitute(info.ret, mapping, lifetimeMapping)
 }
 
 func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *environment, loans *borrowCtx, path string) types.Type {
@@ -875,7 +879,7 @@ func (c *Checker) fieldType(name string, args []types.Type, field string, e ast.
 		for i, p := range st.genParams {
 			mapping[p] = args[i]
 		}
-		return types.Substitute(fty, mapping)
+		return types.Substitute(fty, mapping, nil)
 	}
 	if len(st.genParams) > 0 {
 		c.errorf(PosOf(e), "struct `%s` requires generic arguments", name)
@@ -951,7 +955,7 @@ func (c *Checker) checkStructLitFields(e *ast.StructLit, st *structInfo, args []
 			mapping[p] = args[i]
 		}
 		for name, fty := range fieldMap {
-			fieldMap[name] = types.Substitute(fty, mapping)
+			fieldMap[name] = types.Substitute(fty, mapping, nil)
 		}
 	}
 	provided := make(map[string]bool)
@@ -1035,7 +1039,7 @@ func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types
 		}
 		return base
 	case *ast.RefType:
-		return &types.Ref{Elem: c.resolveType(ty.Elem, path, genParams), IsMut: ty.IsMut}
+		return &types.Ref{Elem: c.resolveType(ty.Elem, path, genParams), IsMut: ty.IsMut, Lifetime: ty.Lifetime}
 	case *ast.ArrayType:
 		return &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Len: ty.Len}
 	default:
@@ -1057,6 +1061,31 @@ func PosOf(n ast.Node) ast.Pos {
 func isError(t types.Type) bool {
 	_, ok := t.(*types.Error)
 	return ok
+}
+
+func (c *Checker) checkLifetimes(pos ast.Pos, t types.Type, scope []string) {
+	switch ty := t.(type) {
+	case *types.Ref:
+		if ty.Lifetime != "" && ty.Lifetime != "'static" {
+			found := false
+			for _, l := range scope {
+				if l == ty.Lifetime {
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.errorf(pos, "lifetime `%s` is not in scope", ty.Lifetime)
+			}
+		} else if ty.Lifetime == "" {
+			c.errorf(pos, "cannot return reference with anonymous lifetime")
+		}
+		c.checkLifetimes(pos, ty.Elem, scope)
+	case *types.Applied:
+		for _, a := range ty.Args {
+			c.checkLifetimes(pos, a, scope)
+		}
+	}
 }
 
 func (c *Checker) checkBlock(block *ast.BlockExpr, env *environment, loans *borrowCtx, ret types.Type, path string) types.Type {

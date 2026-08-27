@@ -116,6 +116,8 @@ func (l *Lexer) Next() Token {
 			return Token{Kind: And, Text: "&&", Pos: start}
 		}
 		return Token{Kind: And, Text: "&", Pos: start}
+	case '\'':
+		return l.readLifetime(start)
 	case '"':
 		return l.readString(start)
 	default:
@@ -188,6 +190,25 @@ func (l *Lexer) readIdent(start int) Token {
 	return Token{Kind: kind, Text: text, Pos: start}
 }
 
+func (l *Lexer) readLifetime(start int) Token {
+	l.pos++ // opening '
+	nameStart := l.pos
+	for l.pos < len(l.src) {
+		ch := l.src[l.pos]
+		if unicode.IsLetter(rune(ch)) || unicode.IsDigit(rune(ch)) || ch == '_' {
+			l.pos++
+		} else {
+			break
+		}
+	}
+	if l.pos == nameStart {
+		l.err = fmt.Errorf("expected lifetime name at offset %d", start)
+		return Token{Kind: EOF, Pos: start}
+	}
+	name := string(l.src[nameStart:l.pos])
+	return Token{Kind: Lifetime, Text: "'" + name, Pos: start}
+}
+
 func (l *Lexer) readString(start int) Token {
 	l.pos++ // opening "
 	for l.pos < len(l.src) {
@@ -206,3 +227,4 @@ func (l *Lexer) readString(start int) Token {
 	l.err = fmt.Errorf("unterminated string at offset %d", start)
 	return Token{Kind: EOF, Pos: start}
 }
+
