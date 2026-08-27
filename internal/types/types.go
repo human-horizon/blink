@@ -87,6 +87,12 @@ func Substitute(t Type, mapping map[string]Type, lifetimeMapping map[string]stri
 		return &Ref{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), IsMut: ty.IsMut, Lifetime: lt}
 	case *Array:
 		return &Array{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), Len: ty.Len}
+	case *Tuple:
+		elems := make([]Type, len(ty.Elems))
+		for i, e := range ty.Elems {
+			elems[i] = Substitute(e, mapping, lifetimeMapping)
+		}
+		return &Tuple{Elems: elems}
 	case *Applied:
 		args := make([]Type, len(ty.Args))
 		for i, arg := range ty.Args {
@@ -138,6 +144,18 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 		}
 		for i, arg := range wantApp.Args {
 			if !Unify(arg, gotApp.Args[i], mapping, lifetimeMapping) {
+				return false
+			}
+		}
+		return true
+	}
+	if wantTup, ok := want.(*Tuple); ok {
+		gotTup, ok := got.(*Tuple)
+		if !ok || len(wantTup.Elems) != len(gotTup.Elems) {
+			return false
+		}
+		for i, e := range wantTup.Elems {
+			if !Unify(e, gotTup.Elems[i], mapping, lifetimeMapping) {
 				return false
 			}
 		}
@@ -196,6 +214,35 @@ func (a *Array) Equals(other Type) bool {
 	return ok && o.Len == a.Len && a.Elem.Equals(o.Elem)
 }
 
+// Tuple is a tuple type.
+type Tuple struct {
+	Elems []Type
+}
+
+func (t *Tuple) typeMarker() {}
+func (t *Tuple) String() string {
+	var s string
+	for i, e := range t.Elems {
+		if i > 0 {
+			s += ", "
+		}
+		s += e.String()
+	}
+	return "(" + s + ")"
+}
+func (t *Tuple) Equals(other Type) bool {
+	o, ok := other.(*Tuple)
+	if !ok || len(t.Elems) != len(o.Elems) {
+		return false
+	}
+	for i, e := range t.Elems {
+		if !e.Equals(o.Elems[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func formatInt(n int64) string {
 	if n == 0 {
 		return "0"
@@ -217,8 +264,19 @@ func formatInt(n int64) string {
 
 // IsCopy returns true if values of the type are implicitly copied on move.
 func IsCopy(t Type) bool {
-	_, ok := t.(*Builtin)
-	return ok
+	switch ty := t.(type) {
+	case *Builtin:
+		return true
+	case *Tuple:
+		for _, e := range ty.Elems {
+			if !IsCopy(e) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 // Error is a sentinel type used when an expression has an error type.

@@ -228,6 +228,59 @@ type PatField struct {
 
 func (PatField) astNode() {}
 
+// TupleType is a tuple type.
+type TupleType struct {
+	Pos          Pos
+	ElementTypes []Type
+}
+
+func (TupleType) astNode() {}
+func (TupleType) typeNode() {}
+
+// TupleExpr is a tuple literal.
+type TupleExpr struct {
+	Pos      Pos
+	Elements []Expr
+}
+
+func (TupleExpr) astNode() {}
+func (TupleExpr) exprNode() {}
+
+// ConstDecl is a compile-time constant.
+type ConstDecl struct {
+	Pos   Pos
+	Pub   bool
+	Name  string
+	Ty    Type
+	Value Expr
+}
+
+func (ConstDecl) astNode()  {}
+func (ConstDecl) declNode() {}
+func (ConstDecl) IsPublic() bool { return false }
+
+// StaticDecl is a global static item.
+type StaticDecl struct {
+	Pos   Pos
+	Pub   bool
+	Name  string
+	Ty    Type
+	Value Expr
+}
+
+func (StaticDecl) astNode()  {}
+func (StaticDecl) declNode() {}
+func (StaticDecl) IsPublic() bool { return false }
+
+// PatTuple matches a tuple and binds its elements.
+type PatTuple struct {
+	Pos      Pos
+	Elements []Pattern
+}
+
+func (PatTuple) astNode()    {}
+func (PatTuple) patternNode() {}
+
 // AssignStmt is an assignment statement.
 type AssignStmt struct {
 	Pos   Pos

@@ -97,10 +97,52 @@ func (p *Parser) parseDecl() ast.Decl {
 		return p.parseModDecl(pub)
 	case lexer.Use:
 		return p.parseUseDecl()
+	case lexer.Ident:
+		if p.tok.Text == "const" {
+			return p.parseConstDecl(pub)
+		}
+		if p.tok.Text == "static" {
+			return p.parseStaticDecl(pub)
+		}
+		fallthrough
 	default:
 		p.setErr("unexpected token %v at top level", p.tok.Kind)
 		return nil
 	}
+}
+
+func (p *Parser) parseConstDecl(pub bool) ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // const
+	name := p.expect(lexer.Ident)
+	p.expect(lexer.Colon)
+	ty := p.parseType()
+	p.expect(lexer.Eq)
+	value := p.parseExpr()
+	if p.tok.Kind == lexer.Semi {
+		p.next()
+	}
+	return &ast.ConstDecl{Pos: pos, Name: name.Text, Ty: ty, Value: value}
+}
+
+func (p *Parser) parseStaticDecl(pub bool) ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // static
+	name := p.expect(lexer.Ident)
+	p.expect(lexer.Colon)
+	ty := p.parseType()
+	p.expect(lexer.Eq)
+	value := p.parseExpr()
+	if p.tok.Kind == lexer.Semi {
+		p.next()
+	}
+	return &ast.StaticDecl{Pos: pos, Name: name.Text, Ty: ty, Value: value}
 }
 
 func (p *Parser) parseFnDecl(pub bool) ast.Decl {
@@ -424,6 +466,29 @@ func (p *Parser) parseType() ast.Type {
 		lenVal, _ := strconv.ParseInt(lenTok.Text, 10, 64)
 		p.expect(lexer.RBracket)
 		return &ast.ArrayType{Pos: pos, Elem: elem, Len: lenVal}
+	case lexer.LParen:
+		pos := ast.Pos(p.tok.Pos)
+		p.next() // (
+		if p.tok.Kind == lexer.RParen {
+			p.next()
+			return &ast.NamedType{Pos: pos, Name: "()"}
+		}
+		first := p.parseType()
+		if p.tok.Kind != lexer.Comma {
+			p.expect(lexer.RParen)
+			return first
+		}
+		var elems []ast.Type
+		elems = append(elems, first)
+		for p.tok.Kind == lexer.Comma {
+			p.next()
+			if p.tok.Kind == lexer.RParen {
+				break
+			}
+			elems = append(elems, p.parseType())
+		}
+		p.expect(lexer.RParen)
+		return &ast.TupleType{Pos: pos, ElementTypes: elems}
 	default:
 		p.setErr("expected type, got %v", p.tok.Kind)
 		return nil
@@ -545,6 +610,18 @@ func (p *Parser) parsePattern() ast.Pattern {
 			return p.parseStructPattern(pos, name)
 		}
 		return &ast.PatIdent{Pos: pos, Name: name}
+	}
+	if p.tok.Kind == lexer.LParen {
+		p.next()
+		var elems []ast.Pattern
+		for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
+			elems = append(elems, p.parsePattern())
+			if p.tok.Kind == lexer.Comma {
+				p.next()
+			}
+		}
+		p.expect(lexer.RParen)
+		return &ast.PatTuple{Pos: pos, Elements: elems}
 	}
 	p.setErr("expected pattern")
 	return nil
@@ -739,11 +816,18 @@ func (p *Parser) parsePrimary() ast.Expr {
 				expr = p.parseCall(expr)
 			} else if p.tok.Kind == lexer.Dot {
 				p.next()
-				field := p.expect(lexer.Ident)
-				if p.tok.Kind == lexer.LParen {
-					expr = p.parseMethodCall(expr, field)
+				if p.tok.Kind == lexer.IntLit {
+					idx := p.tok.Text
+					pos := ast.Pos(p.tok.Pos)
+					p.next()
+					expr = &ast.FieldExpr{Pos: pos, Expr: expr, Field: idx}
 				} else {
-					expr = &ast.FieldExpr{Pos: ast.Pos(field.Pos), Expr: expr, Field: field.Text}
+					field := p.expect(lexer.Ident)
+					if p.tok.Kind == lexer.LParen {
+						expr = p.parseMethodCall(expr, field)
+					} else {
+						expr = &ast.FieldExpr{Pos: ast.Pos(field.Pos), Expr: expr, Field: field.Text}
+					}
 				}
 			} else if p.tok.Kind == lexer.LBracket {
 				p.next()
@@ -769,6 +853,29 @@ func (p *Parser) parsePrimary() ast.Expr {
 			}
 		}
 		return expr
+	case lexer.LParen:
+		pos := ast.Pos(p.tok.Pos)
+		p.next()
+		if p.tok.Kind == lexer.RParen {
+			p.next()
+			return &ast.TupleExpr{Pos: pos, Elements: []ast.Expr{}}
+		}
+		first := p.parseExpr()
+		if p.tok.Kind != lexer.Comma {
+			p.expect(lexer.RParen)
+			return first
+		}
+		var elems []ast.Expr
+		elems = append(elems, first)
+		for p.tok.Kind == lexer.Comma {
+			p.next()
+			if p.tok.Kind == lexer.RParen {
+				break
+			}
+			elems = append(elems, p.parseExpr())
+		}
+		p.expect(lexer.RParen)
+		return &ast.TupleExpr{Pos: pos, Elements: elems}
 	case lexer.LBrace:
 		return p.parseBlock()
 	case lexer.LBracket:

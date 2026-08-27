@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/humanhorizon/blink/internal/ast"
@@ -24,6 +25,18 @@ type Checker struct {
 	traitImpls  map[string]map[string]*implInfo
 	imports     []map[string]string
 	itemFile    map[string]int
+	consts      map[string]*constInfo
+	globals     map[string]*globalInfo
+}
+
+type constInfo struct {
+	decl *ast.ConstDecl
+	ty   types.Type
+}
+
+type globalInfo struct {
+	decl *ast.StaticDecl
+	ty   types.Type
 }
 
 type fnInfo struct {
@@ -82,6 +95,8 @@ func New(files []*ast.File, paths []string, r *diag.Reporter, modulePaths ...[][
 		traitImpls:  make(map[string]map[string]*implInfo),
 		imports:     imports,
 		itemFile:    make(map[string]int),
+		consts:      make(map[string]*constInfo),
+		globals:     make(map[string]*globalInfo),
 	}
 }
 
@@ -139,6 +154,22 @@ func (c *Checker) collect() {
 					c.errorf(decl.Pos, "duplicate trait `%s`", decl.Name)
 				} else {
 					c.traits[key] = &traitInfo{decl: decl, methods: make(map[string]*fnInfo)}
+					c.itemFile[key] = i
+				}
+			case *ast.ConstDecl:
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.consts[key]; ok {
+					c.errorf(decl.Pos, "duplicate const `%s`", decl.Name)
+				} else {
+					c.consts[key] = &constInfo{decl: decl}
+					c.itemFile[key] = i
+				}
+			case *ast.StaticDecl:
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.globals[key]; ok {
+					c.errorf(decl.Pos, "duplicate static `%s`", decl.Name)
+				} else {
+					c.globals[key] = &globalInfo{decl: decl}
 					c.itemFile[key] = i
 				}
 			case *ast.UseDecl:
@@ -352,11 +383,47 @@ func (c *Checker) checkFile(f *ast.File, path string, idx int) {
 	c.currentPath = path
 	for _, d := range f.Decls {
 		switch decl := d.(type) {
+		case *ast.ConstDecl:
+			c.checkConst(decl, path, idx)
+		case *ast.StaticDecl:
+			c.checkStatic(decl, path, idx)
+		}
+	}
+	for _, d := range f.Decls {
+		switch decl := d.(type) {
 		case *ast.FnDecl:
 			c.checkFn(decl, path, idx)
 		case *ast.ImplDecl:
 			c.checkImpl(decl, path, idx)
 		}
+	}
+}
+
+func (c *Checker) checkConst(decl *ast.ConstDecl, path string, idx int) {
+	c.currentIdx = idx
+	c.currentPath = path
+	ty := c.resolveType(decl.Ty, path, nil)
+	valTy := c.checkExpr(decl.Value, newEnv(nil), nil, path)
+	if !ty.Equals(valTy) && !isError(valTy) {
+		c.errorf(PosOf(decl.Value), "expected `%s`, found `%s`", ty, valTy)
+	}
+	key := c.qualifiedName(idx, decl.Name)
+	if info, ok := c.consts[key]; ok {
+		info.ty = ty
+	}
+}
+
+func (c *Checker) checkStatic(decl *ast.StaticDecl, path string, idx int) {
+	c.currentIdx = idx
+	c.currentPath = path
+	ty := c.resolveType(decl.Ty, path, nil)
+	valTy := c.checkExpr(decl.Value, newEnv(nil), nil, path)
+	if !ty.Equals(valTy) && !isError(valTy) {
+		c.errorf(PosOf(decl.Value), "expected `%s`, found `%s`", ty, valTy)
+	}
+	key := c.qualifiedName(idx, decl.Name)
+	if info, ok := c.globals[key]; ok {
+		info.ty = ty
 	}
 }
 
@@ -436,6 +503,20 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 			if _, ok := c.enums[key]; ok && c.canAccess(key) {
 				return &types.Named{Name: e.Name}
 			}
+			if info, ok := c.consts[key]; ok && c.canAccess(key) {
+				if info.ty == nil {
+					c.errorf(e.Pos, "internal error: const `%s` type not resolved", e.Name)
+					return &types.Error{}
+				}
+				return info.ty
+			}
+			if info, ok := c.globals[key]; ok && c.canAccess(key) {
+				if info.ty == nil {
+					c.errorf(e.Pos, "internal error: static `%s` type not resolved", e.Name)
+					return &types.Error{}
+				}
+				return info.ty
+			}
 			c.errorf(e.Pos, "cannot find value `%s` in this scope", e.Name)
 			return &types.Error{}
 		}
@@ -463,6 +544,8 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 		return c.checkStructLit(e, env, loans, path)
 	case *ast.ArrayLit:
 		return c.checkArrayLit(e, env, loans, path)
+	case *ast.TupleExpr:
+		return c.checkTupleExpr(e, env, loans, path)
 	default:
 		c.errorf(PosOf(expr), "unsupported expression")
 		return &types.Error{}
@@ -840,6 +923,21 @@ func (c *Checker) checkIf(e *ast.IfExpr, env *environment, loans *borrowCtx, pat
 func (c *Checker) checkField(e *ast.FieldExpr, env *environment, loans *borrowCtx, path string) types.Type {
 	base := c.checkExpr(e.Expr, env, loans, path)
 	base = c.deref(base)
+	if idx, ok := parseTupleIndex(e.Field); ok {
+		switch t := base.(type) {
+		case *types.Tuple:
+			if idx < 0 || idx >= len(t.Elems) {
+				c.errorf(PosOf(e), "tuple index out of bounds")
+				return &types.Error{}
+			}
+			return t.Elems[idx]
+		default:
+			if !isError(base) {
+				c.errorf(PosOf(e.Expr), "expected tuple, found `%s`", base)
+			}
+			return &types.Error{}
+		}
+	}
 	switch b := base.(type) {
 	case *types.Named:
 		return c.fieldType(b.Name, nil, e.Field, e)
@@ -857,6 +955,19 @@ func (c *Checker) checkField(e *ast.FieldExpr, env *environment, loans *borrowCt
 		}
 		return &types.Error{}
 	}
+}
+
+func parseTupleIndex(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, _ := strconv.Atoi(s)
+	return n, true
 }
 
 func (c *Checker) fieldType(name string, args []types.Type, field string, e ast.Expr) types.Type {
@@ -1001,6 +1112,17 @@ func (c *Checker) checkArrayLit(e *ast.ArrayLit, env *environment, loans *borrow
 	return &types.Array{Elem: elemTy, Len: int64(len(e.Elems))}
 }
 
+func (c *Checker) checkTupleExpr(e *ast.TupleExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	if len(e.Elements) == 0 {
+		return types.Unit
+	}
+	elems := make([]types.Type, len(e.Elements))
+	for i, elem := range e.Elements {
+		elems[i] = c.checkExpr(elem, env, loans, path)
+	}
+	return &types.Tuple{Elems: elems}
+}
+
 func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types.Type {
 	if t == nil {
 		return types.Unit
@@ -1042,6 +1164,12 @@ func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types
 		return &types.Ref{Elem: c.resolveType(ty.Elem, path, genParams), IsMut: ty.IsMut, Lifetime: ty.Lifetime}
 	case *ast.ArrayType:
 		return &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Len: ty.Len}
+	case *ast.TupleType:
+		elems := make([]types.Type, len(ty.ElementTypes))
+		for i, et := range ty.ElementTypes {
+			elems[i] = c.resolveType(et, path, genParams)
+		}
+		return &types.Tuple{Elems: elems}
 	default:
 		return &types.Error{}
 	}
@@ -1172,8 +1300,27 @@ func (c *Checker) checkPattern(pat ast.Pattern, ty types.Type, env *environment,
 		return
 	case *ast.PatStruct:
 		c.checkStructPattern(p, ty, env, isMut, path)
+	case *ast.PatTuple:
+		c.checkTuplePattern(p, ty, env, isMut, path)
 	default:
 		c.errorf(PosOf(pat), "unsupported pattern")
+	}
+}
+
+func (c *Checker) checkTuplePattern(pat *ast.PatTuple, ty types.Type, env *environment, isMut bool, path string) {
+	t, ok := ty.(*types.Tuple)
+	if !ok {
+		if !isError(ty) {
+			c.errorf(pat.Pos, "expected tuple, found `%s`", ty)
+		}
+		return
+	}
+	if len(pat.Elements) != len(t.Elems) {
+		c.errorf(pat.Pos, "expected tuple with %d elements, found %d", len(t.Elems), len(pat.Elements))
+		return
+	}
+	for i, elem := range pat.Elements {
+		c.checkPattern(elem, t.Elems[i], env, isMut, path)
 	}
 }
 
