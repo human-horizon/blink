@@ -149,6 +149,26 @@ func (ImplDecl) astNode()  {}
 func (ImplDecl) declNode() {}
 func (ImplDecl) IsPublic() bool { return true }
 
+// MacroRulesDecl represents a declarative macro definition.
+type MacroRulesDecl struct {
+	Pos  Pos
+	Name string
+	Body Expr
+}
+
+func (MacroRulesDecl) astNode()  {}
+func (MacroRulesDecl) declNode() {}
+func (MacroRulesDecl) IsPublic() bool { return true }
+
+// MacroCallExpr represents an invocation of a declarative macro.
+type MacroCallExpr struct {
+	Pos  Pos
+	Name string
+}
+
+func (MacroCallExpr) astNode() {}
+func (MacroCallExpr) exprNode() {}
+
 // ModDecl represents a module declaration.
 type ModDecl struct {
 	Pos       Pos

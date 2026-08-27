@@ -27,6 +27,7 @@ type Checker struct {
 	itemFile    map[string]int
 	consts      map[string]*constInfo
 	globals     map[string]*globalInfo
+	macros      map[string]*ast.MacroRulesDecl
 }
 
 type constInfo struct {
@@ -100,6 +101,7 @@ func New(files []*ast.File, paths []string, r *diag.Reporter, modulePaths ...[][
 		itemFile:    make(map[string]int),
 		consts:      make(map[string]*constInfo),
 		globals:     make(map[string]*globalInfo),
+		macros:      make(map[string]*ast.MacroRulesDecl),
 	}
 }
 
@@ -173,6 +175,14 @@ func (c *Checker) collect() {
 					c.errorf(decl.Pos, "duplicate static `%s`", decl.Name)
 				} else {
 					c.globals[key] = &globalInfo{decl: decl}
+					c.itemFile[key] = i
+				}
+			case *ast.MacroRulesDecl:
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.macros[key]; ok {
+					c.errorf(decl.Pos, "duplicate macro `%s`", decl.Name)
+				} else {
+					c.macros[key] = decl
 					c.itemFile[key] = i
 				}
 			case *ast.UseDecl:
@@ -549,6 +559,8 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 		return c.checkArrayLit(e, env, loans, path)
 	case *ast.TupleExpr:
 		return c.checkTupleExpr(e, env, loans, path)
+	case *ast.MacroCallExpr:
+		return c.checkMacroCall(e, env, loans, path)
 	default:
 		c.errorf(PosOf(expr), "unsupported expression")
 		return &types.Error{}
@@ -1155,6 +1167,20 @@ func (c *Checker) checkTupleExpr(e *ast.TupleExpr, env *environment, loans *borr
 		elems[i] = c.checkExpr(elem, env, loans, path)
 	}
 	return &types.Tuple{Elems: elems}
+}
+
+func (c *Checker) checkMacroCall(e *ast.MacroCallExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	key := c.resolveName(e.Name)
+	m, ok := c.macros[key]
+	if !ok {
+		c.errorf(e.Pos, "unknown macro `%s`", e.Name)
+		return &types.Error{}
+	}
+	if !c.canAccess(key) {
+		c.errorf(e.Pos, "cannot access macro `%s`", e.Name)
+		return &types.Error{}
+	}
+	return c.checkExpr(m.Body, env, loans, path)
 }
 
 func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types.Type {

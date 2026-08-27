@@ -98,6 +98,14 @@ func (p *Parser) parseDecl() ast.Decl {
 	case lexer.Use:
 		return p.parseUseDecl()
 	case lexer.Ident:
+		if p.tok.Text == "macro_rules" {
+			p.next()
+			if p.tok.Kind == lexer.Bang {
+				return p.parseMacroDecl(pub)
+			}
+			p.setErr("expected `!` after `macro_rules`")
+			return nil
+		}
 		if p.tok.Text == "const" {
 			return p.parseConstDecl(pub)
 		}
@@ -143,6 +151,33 @@ func (p *Parser) parseStaticDecl(pub bool) ast.Decl {
 		p.next()
 	}
 	return &ast.StaticDecl{Pos: pos, Name: name.Text, Ty: ty, Value: value}
+}
+
+func (p *Parser) parseMacroDecl(pub bool) ast.Decl {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.next() // !
+	name := p.expect(lexer.Ident)
+	p.expect(lexer.LBrace)
+	p.expect(lexer.LParen)
+	p.expect(lexer.RParen)
+	p.expect(lexer.Eq)
+	p.expect(lexer.Gt)
+	body := p.parseExpr()
+	if p.tok.Kind == lexer.Semi {
+		p.next()
+	}
+	p.expect(lexer.RBrace)
+	return &ast.MacroRulesDecl{Pos: pos, Name: name.Text, Body: body}
+}
+
+func (p *Parser) parseMacroInvocation(pos ast.Pos, name string) ast.Expr {
+	p.next() // !
+	p.expect(lexer.LParen)
+	p.expect(lexer.RParen)
+	return &ast.MacroCallExpr{Pos: pos, Name: name}
 }
 
 func (p *Parser) parseFnDecl(pub bool) ast.Decl {
@@ -829,6 +864,9 @@ func (p *Parser) parsePrimary() ast.Expr {
 			name = "self"
 		}
 		p.next()
+		if p.tok.Kind == lexer.Bang {
+			return p.parseMacroInvocation(pos, name)
+		}
 		expr := p.parsePathOrExpr(pos, name)
 		for {
 			if p.tok.Kind == lexer.LParen {
