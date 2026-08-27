@@ -152,7 +152,7 @@ func (p *Parser) parseFnDecl(pub bool) ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // fn
 	name := p.expect(lexer.Ident)
-	lifeParams, genParams := p.parseParams()
+	lifeParams, genParams, bounds := p.parseParams()
 	p.expect(lexer.LParen)
 	var params []ast.Param
 	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
@@ -168,7 +168,7 @@ func (p *Parser) parseFnDecl(pub bool) ast.Decl {
 		ret = p.parseType()
 	}
 	body := p.parseBlock()
-	return &ast.FnDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Params: params, Ret: ret, Body: body}
+	return &ast.FnDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Bounds: bounds, Params: params, Ret: ret, Body: body}
 }
 
 func (p *Parser) parseParam() ast.Param {
@@ -199,7 +199,7 @@ func (p *Parser) parseTraitDecl(pub bool) ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // trait
 	name := p.expect(lexer.Ident)
-	lifeParams, genParams := p.parseParams()
+	lifeParams, genParams, bounds := p.parseParams()
 	p.expect(lexer.LBrace)
 	var methods []*ast.FnDecl
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
@@ -216,7 +216,7 @@ func (p *Parser) parseTraitDecl(pub bool) ast.Decl {
 		methods = append(methods, fn)
 	}
 	p.expect(lexer.RBrace)
-	return &ast.TraitDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Methods: methods}
+	return &ast.TraitDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Bounds: bounds, Methods: methods}
 }
 
 func (p *Parser) parseImplDecl() ast.Decl {
@@ -225,6 +225,11 @@ func (p *Parser) parseImplDecl() ast.Decl {
 	}
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // impl
+	var genParams []string
+	var bounds []ast.Constraint
+	if p.tok.Kind == lexer.Lt {
+		_, genParams, bounds = p.parseParams()
+	}
 	firstType := p.parseType()
 	var trait string
 	var forType ast.Type
@@ -254,7 +259,7 @@ func (p *Parser) parseImplDecl() ast.Decl {
 		methods = append(methods, fn)
 	}
 	p.expect(lexer.RBrace)
-	return &ast.ImplDecl{Pos: pos, Trait: trait, ForType: forType, Methods: methods}
+	return &ast.ImplDecl{Pos: pos, Trait: trait, ForType: forType, GenParams: genParams, Bounds: bounds, Methods: methods}
 }
 
 func (p *Parser) parseModDecl(pub bool) ast.Decl {
@@ -308,7 +313,7 @@ func (p *Parser) parseFnSig() ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.expect(lexer.Fn)
 	name := p.expect(lexer.Ident)
-	lifeParams, genParams := p.parseParams()
+	lifeParams, genParams, bounds := p.parseParams()
 	p.expect(lexer.LParen)
 	var params []ast.Param
 	for p.tok.Kind != lexer.RParen && p.tok.Kind != lexer.EOF {
@@ -323,7 +328,7 @@ func (p *Parser) parseFnSig() ast.Decl {
 		p.next()
 		ret = p.parseType()
 	}
-	return &ast.FnDecl{Pos: pos, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Params: params, Ret: ret}
+	return &ast.FnDecl{Pos: pos, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Bounds: bounds, Params: params, Ret: ret}
 }
 
 func (p *Parser) parseStructDecl(pub bool) ast.Decl {
@@ -333,7 +338,7 @@ func (p *Parser) parseStructDecl(pub bool) ast.Decl {
 	pos := ast.Pos(p.tok.Pos)
 	p.next() // struct
 	name := p.expect(lexer.Ident)
-	lifeParams, genParams := p.parseParams()
+	lifeParams, genParams, bounds := p.parseParams()
 	p.expect(lexer.LBrace)
 	var fields []ast.Field
 	for p.tok.Kind != lexer.RBrace && p.tok.Kind != lexer.EOF {
@@ -347,7 +352,7 @@ func (p *Parser) parseStructDecl(pub bool) ast.Decl {
 		}
 	}
 	p.expect(lexer.RBrace)
-	return &ast.StructDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Fields: fields}
+	return &ast.StructDecl{Pos: pos, Pub: pub, Name: name.Text, LifetimeParams: lifeParams, GenParams: genParams, Bounds: bounds, Fields: fields}
 }
 
 func (p *Parser) parseEnumDecl(pub bool) ast.Decl {
@@ -372,21 +377,35 @@ func (p *Parser) parseEnumDecl(pub bool) ast.Decl {
 	return &ast.EnumDecl{Pos: pos, Pub: pub, Name: name.Text, GenParams: genParams, Variants: variants}
 }
 
-func (p *Parser) parseParams() ([]string, []string) {
+func (p *Parser) parseParams() ([]string, []string, []ast.Constraint) {
 	if p.tok.Kind != lexer.Lt {
-		return nil, nil
+		return nil, nil, nil
 	}
 	p.next() // <
 	var lifetimes []string
 	var generics []string
+	var bounds []ast.Constraint
 	for p.tok.Kind != lexer.Gt && p.tok.Kind != lexer.EOF {
 		switch p.tok.Kind {
 		case lexer.Lifetime:
 			lifetimes = append(lifetimes, p.tok.Text)
 			p.next()
 		case lexer.Ident:
-			generics = append(generics, p.tok.Text)
+			name := p.tok.Text
+			generics = append(generics, name)
 			p.next()
+			if p.tok.Kind == lexer.Colon {
+				p.next()
+				for {
+					traitTok := p.expect(lexer.Ident)
+					bounds = append(bounds, ast.Constraint{Param: name, Trait: traitTok.Text})
+					if p.tok.Kind == lexer.Plus {
+						p.next()
+					} else {
+						break
+					}
+				}
+			}
 		default:
 			p.setErr("expected lifetime or generic parameter")
 		}
@@ -395,11 +414,11 @@ func (p *Parser) parseParams() ([]string, []string) {
 		}
 	}
 	p.expect(lexer.Gt)
-	return lifetimes, generics
+	return lifetimes, generics, bounds
 }
 
 func (p *Parser) parseGenericParams() []string {
-	_, generics := p.parseParams()
+	_, generics, _ := p.parseParams()
 	return generics
 }
 

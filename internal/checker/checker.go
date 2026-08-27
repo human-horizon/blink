@@ -43,6 +43,7 @@ type fnInfo struct {
 	decl           *ast.FnDecl
 	lifetimeParams []string
 	genParams      []string
+	bounds         []ast.Constraint
 	paramTypes     []types.Type
 	ret            types.Type
 	selfType       types.Type
@@ -52,6 +53,7 @@ type structInfo struct {
 	decl           *ast.StructDecl
 	lifetimeParams []string
 	genParams      []string
+	bounds         []ast.Constraint
 	fields         map[string]types.Type
 }
 
@@ -69,6 +71,7 @@ type implInfo struct {
 	decl    *ast.ImplDecl
 	trait   string
 	forType types.Type
+	bounds  []ast.Constraint
 	methods map[string]*fnInfo
 }
 
@@ -129,7 +132,7 @@ func (c *Checker) collect() {
 				if _, ok := c.fns[key]; ok {
 					c.errorf(decl.Pos, "duplicate function `%s`", decl.Name)
 				} else {
-					c.fns[key] = &fnInfo{decl: decl, lifetimeParams: decl.LifetimeParams, genParams: decl.GenParams}
+					c.fns[key] = &fnInfo{decl: decl, lifetimeParams: decl.LifetimeParams, genParams: decl.GenParams, bounds: decl.Bounds}
 					c.itemFile[key] = i
 				}
 			case *ast.StructDecl:
@@ -137,7 +140,7 @@ func (c *Checker) collect() {
 				if _, ok := c.structs[key]; ok {
 					c.errorf(decl.Pos, "duplicate struct `%s`", decl.Name)
 				} else {
-					c.structs[key] = &structInfo{decl: decl, lifetimeParams: decl.LifetimeParams, genParams: decl.GenParams}
+					c.structs[key] = &structInfo{decl: decl, lifetimeParams: decl.LifetimeParams, genParams: decl.GenParams, bounds: decl.Bounds}
 					c.itemFile[key] = i
 				}
 			case *ast.EnumDecl:
@@ -189,7 +192,7 @@ func (c *Checker) collect() {
 	}
 	for _, info := range c.traits {
 		for _, m := range info.decl.Methods {
-			minfo := &fnInfo{decl: m, lifetimeParams: m.LifetimeParams, genParams: m.GenParams}
+			minfo := &fnInfo{decl: m, lifetimeParams: m.LifetimeParams, genParams: m.GenParams, bounds: m.Bounds}
 			selfTy := &types.Ref{Elem: &types.Generic{Name: "Self"}, IsMut: false}
 			c.fillMethodInfo(minfo, m, []string{"Self"}, selfTy)
 			info.methods[m.Name] = minfo
@@ -309,7 +312,7 @@ func (c *Checker) collectImpl(impl *ast.ImplDecl) {
 	selfRef := &types.Ref{Elem: forType, IsMut: false}
 	methods := make(map[string]*fnInfo)
 	for _, m := range impl.Methods {
-		minfo := &fnInfo{decl: m, genParams: m.GenParams}
+		minfo := &fnInfo{decl: m, genParams: m.GenParams, bounds: m.Bounds}
 		c.fillMethodInfo(minfo, m, append([]string{"Self"}, m.GenParams...), selfRef)
 		methods[m.Name] = minfo
 	}
@@ -349,7 +352,7 @@ func (c *Checker) collectImpl(impl *ast.ImplDecl) {
 		if _, ok := c.traitImpls[impl.Trait]; !ok {
 			c.traitImpls[impl.Trait] = make(map[string]*implInfo)
 		}
-		c.traitImpls[impl.Trait][typeName] = &implInfo{decl: impl, trait: impl.Trait, forType: forType, methods: methods}
+		c.traitImpls[impl.Trait][typeName] = &implInfo{decl: impl, trait: impl.Trait, forType: forType, bounds: impl.Bounds, methods: methods}
 	}
 }
 
@@ -367,7 +370,7 @@ func (c *Checker) fnSigMatches(a, b *fnInfo) bool {
 
 func (c *Checker) substSelf(info *fnInfo, forType types.Type) *fnInfo {
 	mapping := map[string]types.Type{"Self": forType}
-	copy := &fnInfo{decl: info.decl, genParams: info.genParams}
+	copy := &fnInfo{decl: info.decl, genParams: info.genParams, bounds: info.bounds}
 	for _, p := range info.paramTypes {
 		copy.paramTypes = append(copy.paramTypes, types.Substitute(p, mapping, nil))
 	}
@@ -778,8 +781,12 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 }
 
 func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type, env *environment, loans *borrowCtx, path string) types.Type {
+	callPos := ast.Pos(0)
+	if len(args) > 0 {
+		callPos = PosOf(args[0])
+	}
 	if len(info.paramTypes) != len(args) {
-		c.errorf(PosOf(args[0]), "expected %d arguments, found %d", len(info.paramTypes), len(args))
+		c.errorf(callPos, "expected %d arguments, found %d", len(info.paramTypes), len(args))
 		return &types.Error{}
 	}
 	mapping := make(map[string]types.Type)
@@ -796,9 +803,10 @@ func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type
 	}
 	for _, name := range info.genParams {
 		if _, ok := mapping[name]; !ok {
-			c.errorf(PosOf(args[0]), "cannot infer type parameter `%s`", name)
+			c.errorf(callPos, "cannot infer type parameter `%s`", name)
 		}
 	}
+	c.checkBounds(info.bounds, mapping, callPos, path)
 	return types.Substitute(info.ret, mapping, lifetimeMapping)
 }
 
@@ -968,6 +976,32 @@ func parseTupleIndex(s string) (int, bool) {
 	}
 	n, _ := strconv.Atoi(s)
 	return n, true
+}
+
+func (c *Checker) checkBounds(bounds []ast.Constraint, mapping map[string]types.Type, pos ast.Pos, path string) {
+	for _, b := range bounds {
+		ty, ok := mapping[b.Param]
+		if !ok {
+			continue
+		}
+		concrete := types.Substitute(ty, mapping, nil)
+		if !c.hasTraitImpl(concrete, b.Trait) {
+			c.errorf(pos, "the type `%s` does not implement trait `%s`", concrete, b.Trait)
+		}
+	}
+}
+
+func (c *Checker) hasTraitImpl(ty types.Type, trait string) bool {
+	name := c.typeName(ty)
+	if name == "" {
+		return false
+	}
+	if m, ok := c.traitImpls[trait]; ok {
+		if _, ok := m[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Checker) fieldType(name string, args []types.Type, field string, e ast.Expr) types.Type {

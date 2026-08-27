@@ -44,6 +44,12 @@ type File struct {
 	Decls []Decl
 }
 
+// Constraint is a single trait bound on a generic parameter.
+type Constraint struct {
+	Param string
+	Trait string
+}
+
 // FnDecl represents a function declaration.
 type FnDecl struct {
 	Pos            Pos
@@ -51,6 +57,7 @@ type FnDecl struct {
 	Name           string
 	LifetimeParams []string
 	GenParams      []string
+	Bounds         []Constraint
 	Params         []Param
 	Ret            Type // nil if no explicit return type (-> ())
 	Body           *BlockExpr
@@ -76,6 +83,7 @@ type StructDecl struct {
 	Name           string
 	LifetimeParams []string
 	GenParams      []string
+	Bounds         []Constraint
 	Fields         []Field
 }
 
@@ -118,6 +126,7 @@ type TraitDecl struct {
 	Name           string
 	LifetimeParams []string
 	GenParams      []string
+	Bounds         []Constraint
 	Methods        []*FnDecl
 }
 
@@ -128,10 +137,12 @@ func (d TraitDecl) IsPublic() bool { return d.Pub }
 
 // ImplDecl represents an impl block (trait or inherent).
 type ImplDecl struct {
-	Pos     Pos
-	Trait   string // empty for inherent impl
-	ForType Type
-	Methods []*FnDecl
+	Pos       Pos
+	Trait     string // empty for inherent impl
+	ForType   Type
+	GenParams []string
+	Bounds    []Constraint
+	Methods   []*FnDecl
 }
 
 func (ImplDecl) astNode()  {}
