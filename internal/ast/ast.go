@@ -268,6 +268,15 @@ type TupleType struct {
 func (TupleType) astNode() {}
 func (TupleType) typeNode() {}
 
+// UnsafeBlockExpr represents an unsafe block expression.
+type UnsafeBlockExpr struct {
+	Pos  Pos
+	Body *BlockExpr
+}
+
+func (UnsafeBlockExpr) astNode() {}
+func (UnsafeBlockExpr) exprNode() {}
+
 // TupleExpr is a tuple literal.
 type TupleExpr struct {
 	Pos      Pos

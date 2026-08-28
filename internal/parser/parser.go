@@ -935,6 +935,8 @@ func (p *Parser) parsePrimary() ast.Expr {
 		return &ast.TupleExpr{Pos: pos, Elements: elems}
 	case lexer.LBrace:
 		return p.parseBlock()
+	case lexer.Unsafe:
+		return p.parseUnsafeBlock()
 	case lexer.LBracket:
 		return p.parseArrayLit()
 	default:
@@ -1013,6 +1015,16 @@ func (p *Parser) parseIfExpr() ast.Expr {
 		elseBlock = p.parseBlock()
 	}
 	return &ast.IfExpr{Pos: pos, Cond: cond, ThenBlock: thenBlock, ElseBlock: elseBlock}
+}
+
+func (p *Parser) parseUnsafeBlock() ast.Expr {
+	if p.err != nil {
+		return nil
+	}
+	pos := ast.Pos(p.tok.Pos)
+	p.expect(lexer.Unsafe)
+	body := p.parseBlock()
+	return &ast.UnsafeBlockExpr{Pos: pos, Body: body}
 }
 
 func (p *Parser) parseArrayLit() ast.Expr {

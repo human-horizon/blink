@@ -547,6 +547,8 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 		return c.checkCall(e, env, loans, path)
 	case *ast.BlockExpr:
 		return c.checkBlock(e, env, loans, types.Unit, path)
+	case *ast.UnsafeBlockExpr:
+		return c.checkExpr(e.Body, env, loans, path)
 	case *ast.IfExpr:
 		return c.checkIf(e, env, loans, path)
 	case *ast.FieldExpr:

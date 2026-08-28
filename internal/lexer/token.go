@@ -31,6 +31,7 @@ const (
 	Lifetime
 	I32
 	Bool
+	Unsafe
 
 	// Operators
 	Plus
@@ -88,6 +89,7 @@ var keywords = map[string]TokenKind{
 	"for":    For,
 	"i32":    I32,
 	"bool":   Bool,
+	"unsafe": Unsafe,
 	"true":   True,
 	"false":  False,
 }
