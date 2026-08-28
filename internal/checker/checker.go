@@ -28,6 +28,7 @@ type Checker struct {
 	consts      map[string]*constInfo
 	globals     map[string]*globalInfo
 	macros      map[string]*ast.MacroRulesDecl
+	exprTypes   map[ast.Expr]types.Type
 }
 
 type constInfo struct {
@@ -102,7 +103,13 @@ func New(files []*ast.File, paths []string, r *diag.Reporter, modulePaths ...[][
 		consts:      make(map[string]*constInfo),
 		globals:     make(map[string]*globalInfo),
 		macros:      make(map[string]*ast.MacroRulesDecl),
+		exprTypes:   make(map[ast.Expr]types.Type),
 	}
+}
+
+// ExprType returns the resolved type of an expression, if any.
+func (c *Checker) ExprType(expr ast.Expr) types.Type {
+	return c.exprTypes[expr]
 }
 
 func (c *Checker) Check() bool {
@@ -498,7 +505,10 @@ func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 	}
 }
 
-func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, path string) types.Type {
+func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, path string) (result types.Type) {
+	defer func() {
+		c.exprTypes[expr] = result
+	}()
 	switch e := expr.(type) {
 	case *ast.IntLit:
 		return types.I32

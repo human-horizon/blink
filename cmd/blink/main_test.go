@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"testing"
 )
 
@@ -155,5 +156,30 @@ func TestCheckInvalidPhase11(t *testing.T) {
 	err := checkPath("../../testdata/phase11/invalid")
 	if err == nil {
 		t.Fatal("expected error for invalid testdata")
+	}
+}
+
+func TestBuildRunExit42(t *testing.T) {
+	binary, err := buildPath("../../testdata/run/valid/exit42")
+	if err != nil {
+		t.Fatalf("expected build success, got: %v", err)
+	}
+	cmd := exec.Command(binary)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected exit code 42")
+	} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 42 {
+		t.Fatalf("expected exit code 42, got: %v", err)
+	}
+}
+
+func TestBuildValidPhases(t *testing.T) {
+	phases := []string{
+		"phase1", "phase2", "phase3", "phase4", "phase5", "phase6",
+		"phase7", "phase8", "phase9", "phase10", "phase11",
+	}
+	for _, phase := range phases {
+		if _, err := buildPath("../../testdata/" + phase + "/valid"); err != nil {
+			t.Fatalf("expected %s to build, got: %v", phase, err)
+		}
 	}
 }
