@@ -3,6 +3,7 @@ package checker
 import (
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -442,7 +443,7 @@ func (c *Checker) checkConst(decl *ast.ConstDecl, path string, idx int) {
 	ty := c.resolveType(decl.Ty, path, nil)
 	valTy := c.checkExpr(decl.Value, newEnv(nil), nil, path)
 	if !ty.Equals(valTy) && !isError(valTy) {
-		c.errorf(PosOf(decl.Value), "expected `%s`, found `%s`", ty, valTy)
+		c.errorf(PosOf(decl.Value), "expected `%s`, found `%s`", typeStr(ty), typeStr(valTy))
 	}
 	key := c.qualifiedName(idx, decl.Name)
 	if info, ok := c.consts[key]; ok {
@@ -456,7 +457,7 @@ func (c *Checker) checkStatic(decl *ast.StaticDecl, path string, idx int) {
 	ty := c.resolveType(decl.Ty, path, nil)
 	valTy := c.checkExpr(decl.Value, newEnv(nil), nil, path)
 	if !ty.Equals(valTy) && !isError(valTy) {
-		c.errorf(PosOf(decl.Value), "expected `%s`, found `%s`", ty, valTy)
+		c.errorf(PosOf(decl.Value), "expected `%s`, found `%s`", typeStr(ty), typeStr(valTy))
 	}
 	key := c.qualifiedName(idx, decl.Name)
 	if info, ok := c.globals[key]; ok {
@@ -479,7 +480,7 @@ func (c *Checker) checkFn(fn *ast.FnDecl, path string, idx int) {
 	loans := newBorrowCtx(nil)
 	bodyTy := c.checkBlock(fn.Body, env, loans, info.ret, path)
 	if !bodyTy.Equals(info.ret) && !isError(bodyTy) {
-		c.errorf(PosOf(fn.Body), "expected `%s`, found `%s`", info.ret, bodyTy)
+		c.errorf(PosOf(fn.Body), "expected `%s`, found `%s`", typeStr(info.ret), typeStr(bodyTy))
 	}
 	c.checkLifetimes(fn.Pos, info.ret, info.lifetimeParams)
 }
@@ -516,8 +517,8 @@ func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 		}
 		loans := newBorrowCtx(nil)
 		bodyTy := c.checkBlock(m.Body, env, loans, minfo.ret, path)
-		if !bodyTy.Equals(minfo.ret) && !isError(bodyTy) {
-			c.errorf(PosOf(m.Body), "expected `%s`, found `%s`", minfo.ret, bodyTy)
+		if bodyTy != nil && !bodyTy.Equals(minfo.ret) && !isError(bodyTy) {
+			c.errorf(PosOf(m.Body), "expected `%s`, found `%s`", typeStr(minfo.ret), typeStr(bodyTy))
 		}
 	}
 }
@@ -889,7 +890,7 @@ func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type
 			continue
 		}
 		if !types.Unify(paramTy, argTy, mapping, lifetimeMapping) && !isError(argTy) {
-			c.errorf(PosOf(args[i]), "expected `%s`, found `%s`", paramTy, argTy)
+			c.errorf(PosOf(args[i]), "expected `%s`, found `%s`", typeStr(paramTy), typeStr(argTy))
 		}
 	}
 	for _, name := range info.genParams {
@@ -926,7 +927,7 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 	baseTy := c.deref(recvTy)
 	baseName := c.typeName(baseTy)
 	if baseName == "" {
-		c.errorf(PosOf(recvExpr), "method calls require a named type")
+		c.errorf(PosOf(recvExpr), "method calls require a named type (got %s)", typeStr(recvTy))
 		return &types.Error{}
 	}
 	m := c.findInherentMethod(baseName, methodName)
@@ -953,7 +954,7 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 	} else {
 		expectedSelf := &types.Ref{Elem: baseTy, IsMut: false}
 		if !m.selfType.Equals(expectedSelf) && !m.selfType.Equals(baseTy) {
-			c.errorf(PosOf(recvExpr), "expected `%s`, found `%s`", m.selfType, recvTy)
+			c.errorf(PosOf(recvExpr), "expected `%s`, found `%s`", typeStr(m.selfType), typeStr(recvTy))
 			return &types.Error{}
 		}
 	}
@@ -1027,6 +1028,8 @@ func (c *Checker) typeName(t types.Type) string {
 		return "tuple"
 	case *types.Array:
 		return "array"
+	case *types.Builtin:
+		return ty.Name
 	}
 	return ""
 }
@@ -1040,7 +1043,7 @@ func (c *Checker) checkIf(e *ast.IfExpr, env *environment, loans *borrowCtx, pat
 	if e.ElseBlock != nil {
 		elseTy := c.checkBlock(e.ElseBlock, env, loans, types.Unit, path)
 		if !thenTy.Equals(elseTy) && !isError(thenTy) && !isError(elseTy) {
-			c.errorf(PosOf(e.ElseBlock), "expected `%s`, found `%s`", thenTy, elseTy)
+			c.errorf(PosOf(e.ElseBlock), "expected `%s`, found `%s`", typeStr(thenTy), typeStr(elseTy))
 		}
 		return thenTy
 	}
@@ -1231,7 +1234,7 @@ func (c *Checker) checkStructLitFields(e *ast.StructLit, st *structInfo, args []
 		}
 		valTy := c.checkExpr(init.Value, env, loans, path)
 		if !valTy.Equals(expected) && !isError(valTy) {
-			c.errorf(PosOf(init.Value), "expected `%s`, found `%s`", expected, valTy)
+			c.errorf(PosOf(init.Value), "expected `%s`, found `%s`", typeStr(expected), typeStr(valTy))
 		}
 		provided[init.Name] = true
 	}
@@ -1259,7 +1262,7 @@ func (c *Checker) checkArrayLit(e *ast.ArrayLit, env *environment, loans *borrow
 	for _, elem := range e.Elems[1:] {
 		ty := c.checkExpr(elem, env, loans, path)
 		if !ty.Equals(elemTy) && !isError(ty) {
-			c.errorf(PosOf(elem), "expected `%s`, found `%s`", elemTy, ty)
+			c.errorf(PosOf(elem), "expected `%s`, found `%s`", typeStr(elemTy), typeStr(ty))
 		}
 	}
 	return &types.Array{Elem: elemTy, Len: int64(len(e.Elems))}
@@ -1361,8 +1364,24 @@ func PosOf(n ast.Node) ast.Pos {
 }
 
 func isError(t types.Type) bool {
+	if t == nil {
+		return false
+	}
 	_, ok := t.(*types.Error)
 	return ok
+}
+
+// typeStr renders t safely even when t is the typed-nil interface value.
+func typeStr(t types.Type) string {
+	if t == nil {
+		return "<unknown>"
+	}
+	// Avoid calling String() on a typed-nil pointer (e.g. *Builtin(nil) wrapped
+	// in a Type interface) since some String() methods panic on nil dereference.
+	if v := reflect.ValueOf(t); v.Kind() == reflect.Ptr && v.IsNil() {
+		return "<unknown>"
+	}
+	return t.String()
 }
 
 func (c *Checker) checkLifetimes(pos ast.Pos, t types.Type, scope []string) {
@@ -1425,7 +1444,7 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 		}
 		if annot != nil {
 			if !annot.Equals(valTy) && !isError(valTy) {
-				c.errorf(PosOf(st.Value), "expected `%s`, found `%s`", annot, valTy)
+				c.errorf(PosOf(st.Value), "expected `%s`, found `%s`", typeStr(annot), typeStr(valTy))
 			}
 		}
 		ty := valTy
@@ -1453,7 +1472,7 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 			}
 		}
 		if !ty.Equals(ret) && !isError(ty) {
-			c.errorf(st.Pos, "expected `%s`, found `%s`", ret, ty)
+			c.errorf(st.Pos, "expected `%s`, found `%s`", typeStr(ret), typeStr(ty))
 		}
 	case *ast.WhileStmt:
 		cond := c.checkExpr(st.Cond, env, loans, path)
@@ -1518,7 +1537,7 @@ func (c *Checker) checkStructPattern(pat *ast.PatStruct, ty types.Type, env *env
 		return
 	}
 	if !want.Equals(ty) && !isError(ty) {
-		c.errorf(pat.Pos, "expected `%s`, found `%s`", want, ty)
+		c.errorf(pat.Pos, "expected `%s`, found `%s`", typeStr(want), typeStr(ty))
 		return
 	}
 	provided := make(map[string]bool)
@@ -1546,7 +1565,7 @@ func (c *Checker) checkAssign(st *ast.AssignStmt, env *environment, loans *borro
 	rightTy := c.checkExpr(st.Right, env, loans, path)
 	leftTy := c.checkExprNoBorrow(st.Left, env, path)
 	if !leftTy.Equals(rightTy) && !isError(leftTy) && !isError(rightTy) {
-		c.errorf(PosOf(st.Right), "expected `%s`, found `%s`", leftTy, rightTy)
+		c.errorf(PosOf(st.Right), "expected `%s`, found `%s`", typeStr(leftTy), typeStr(rightTy))
 	}
 	c.useWrite(loans, st.Left, leftTy)
 	c.move(loans, st.Right, rightTy)

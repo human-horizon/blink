@@ -23,6 +23,12 @@ type Builtin struct {
 func (b *Builtin) typeMarker()    {}
 func (b *Builtin) String() string { return b.Name }
 func (b *Builtin) Equals(other Type) bool {
+	if b == nil {
+		return other == nil
+	}
+	if other == nil {
+		return b == nil
+	}
 	if isUsizeStub(b) && isUsizeStub(other) {
 		return true
 	}
@@ -67,6 +73,12 @@ type Generic struct {
 func (g *Generic) typeMarker()    {}
 func (g *Generic) String() string { return g.Name }
 func (g *Generic) Equals(other Type) bool {
+	if g == nil {
+		return other == nil
+	}
+	if other == nil {
+		return g == nil
+	}
 	o, ok := other.(*Generic)
 	return ok && o.Name == g.Name
 }
@@ -79,22 +91,42 @@ type Applied struct {
 
 func (a *Applied) typeMarker() {}
 func (a *Applied) String() string {
+	if a == nil {
+		return "<applied>"
+	}
 	var s string
 	for i, arg := range a.Args {
 		if i > 0 {
 			s += ", "
 		}
-		s += arg.String()
+		if arg == nil {
+			s += "_"
+		} else {
+			s += arg.String()
+		}
+	}
+	if a.Base == nil {
+		return "_<" + s + ">"
 	}
 	return a.Base.String() + "<" + s + ">"
 }
 func (a *Applied) Equals(other Type) bool {
+	if a == nil {
+		return other == nil
+	}
+	if other == nil {
+		return a == nil
+	}
 	o, ok := other.(*Applied)
-	if !ok || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
+	if !ok || o == nil || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
 		return false
 	}
 	for i, arg := range a.Args {
-		if !arg.Equals(o.Args[i]) {
+		other := o.Args[i]
+		if arg == nil {
+			arg = (*Applied)(nil)
+		}
+		if !arg.Equals(other) {
 			return false
 		}
 	}
@@ -208,6 +240,12 @@ type Named struct {
 func (n *Named) typeMarker()    {}
 func (n *Named) String() string { return n.Name }
 func (n *Named) Equals(other Type) bool {
+	if n == nil {
+		return other == nil
+	}
+	if other == nil {
+		return n == nil
+	}
 	if isUsizeStub(n) && isUsizeStub(other) {
 		return true
 	}
@@ -228,12 +266,21 @@ func (r *Ref) String() string {
 	if r.IsMut {
 		mut = "mut "
 	}
+	if r.Elem == nil {
+		return "&" + mut + "_"
+	}
 	if r.Lifetime != "" {
 		return "&" + r.Lifetime + " " + mut + r.Elem.String()
 	}
 	return "&" + mut + r.Elem.String()
 }
 func (r *Ref) Equals(other Type) bool {
+	if r == nil {
+		return other == nil
+	}
+	if other == nil {
+		return r == nil
+	}
 	o, ok := other.(*Ref)
 	return ok && o.IsMut == r.IsMut && o.Lifetime == r.Lifetime && r.Elem.Equals(o.Elem)
 }
@@ -249,6 +296,12 @@ func (a *Array) String() string {
 	return "[" + a.Elem.String() + "; " + formatInt(a.Len) + "]"
 }
 func (a *Array) Equals(other Type) bool {
+	if a == nil {
+		return other == nil
+	}
+	if other == nil {
+		return a == nil
+	}
 	o, ok := other.(*Array)
 	return ok && o.Len == a.Len && a.Elem.Equals(o.Elem)
 }
@@ -258,9 +311,20 @@ type Slice struct {
 	Elem Type
 }
 
-func (s *Slice) typeMarker()    {}
-func (s *Slice) String() string { return "[" + s.Elem.String() + "]" }
+func (s *Slice) typeMarker() {}
+func (s *Slice) String() string {
+	if s.Elem == nil {
+		return "[_]"
+	}
+	return "[" + s.Elem.String() + "]"
+}
 func (s *Slice) Equals(other Type) bool {
+	if s == nil {
+		return other == nil
+	}
+	if other == nil {
+		return s == nil
+	}
 	o, ok := other.(*Slice)
 	return ok && s.Elem.Equals(o.Elem)
 }
@@ -272,22 +336,39 @@ type Tuple struct {
 
 func (t *Tuple) typeMarker() {}
 func (t *Tuple) String() string {
+	if t == nil {
+		return "()"
+	}
 	var s string
 	for i, e := range t.Elems {
 		if i > 0 {
 			s += ", "
 		}
-		s += e.String()
+		if e == nil {
+			s += "_"
+		} else {
+			s += e.String()
+		}
 	}
 	return "(" + s + ")"
 }
 func (t *Tuple) Equals(other Type) bool {
+	if t == nil {
+		return other == nil
+	}
+	if other == nil {
+		return t == nil
+	}
 	o, ok := other.(*Tuple)
-	if !ok || len(t.Elems) != len(o.Elems) {
+	if !ok || o == nil || len(t.Elems) != len(o.Elems) {
 		return false
 	}
 	for i, e := range t.Elems {
-		if !e.Equals(o.Elems[i]) {
+		other := o.Elems[i]
+		if e == nil {
+			e = (*Tuple)(nil)
+		}
+		if !e.Equals(other) {
 			return false
 		}
 	}
@@ -333,6 +414,15 @@ func IsCopy(t Type) bool {
 // Error is a sentinel type used when an expression has an error type.
 type Error struct{}
 
-func (e *Error) typeMarker()            {}
-func (e *Error) String() string         { return "<error>" }
-func (e *Error) Equals(other Type) bool { _, ok := other.(*Error); return ok }
+func (e *Error) typeMarker()    {}
+func (e *Error) String() string { return "<error>" }
+func (e *Error) Equals(other Type) bool {
+	if e == nil {
+		return other == nil
+	}
+	if other == nil {
+		return e == nil
+	}
+	_, ok := other.(*Error)
+	return ok
+}

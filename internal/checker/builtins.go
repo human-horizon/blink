@@ -30,6 +30,15 @@ var builtinTypes = map[string]struct{}{
 	"slice":              {},
 	"tuple":              {},
 	"array":              {},
+	"i32":                {},
+	"i64":                {},
+	"i8":                 {},
+	"u32":                {},
+	"u64":                {},
+	"usize":              {},
+	"f32":                {},
+	"f64":                {},
+	"bool":               {},
 	"ComponentId":        {},
 	"BundleId":           {},
 	"Entity":             {},
@@ -200,7 +209,7 @@ func init() {
 	register("TableId", "empty", nil, nil, &types.Named{Name: "TableId"})
 	register("ArchetypeId", "EMPTY", nil, nil, &types.Named{Name: "ArchetypeId"})
 
-	for _, tn := range []string{"SparseSet", "ImmutableSparseSet", "SparseArray", "Components", "Observers"} {
+	for _, tn := range []string{"SparseSet", "ImmutableSparseSet", "SparseArray", "Components", "Observers", "ComponentIndex", "Edges"} {
 		register(tn, "new", nil, nil, &types.Named{Name: tn})
 		register(tn, "default", nil, nil, &types.Named{Name: tn})
 		register(tn, "with_capacity", nil, []types.Type{i32}, &types.Named{Name: tn})
@@ -212,8 +221,40 @@ func init() {
 		register(tn, "indices", ref(&types.Named{Name: tn}), nil, &types.Slice{Elem: nil})
 		register(tn, "iter", ref(&types.Named{Name: tn}), nil, iter)
 	}
+	// Bevy-specific methods.
+	components := &types.Named{Name: "Components"}
+	register("Components", "get_info_unchecked", ref(components), []types.Type{nil}, nil)
+	register("Components", "get", ref(components), []types.Type{nil}, opt)
+	observers := &types.Named{Name: "Observers"}
+	register("Observers", "update_archetype_flags", refMut(observers), []types.Type{nil, nil}, unitT)
+	register("Observers", "default", nil, nil, observers)
+	ci := &types.Named{Name: "ComponentIndex"}
+	register("ComponentIndex", "entry", refMut(ci), []types.Type{nil}, &types.Named{Name: "Entry"})
+	register("ComponentIndex", "or_default", refMut(ci), []types.Type{nil}, nil)
+	vec2 := &types.Named{Name: "Vec"}
+	register("Vec", "get_unchecked_mut", refMut(vec2), []types.Type{i32}, nil)
+	register("Vec", "get_unchecked", ref(vec2), []types.Type{i32}, nil)
+	register("Vec", "swap_remove", refMut(vec2), []types.Type{i32}, nil)
+	register("Vec", "first", ref(vec2), nil, opt)
+	register("Vec", "last", ref(vec2), nil, opt)
+	boxT := &types.Named{Name: "Box"}
+	register("Box", "get", ref(boxT), []types.Type{nil}, nil)
+	register("Box", "downcast", refMut(boxT), []types.Type{nil}, nil)
+	optT := &types.Named{Name: "Option"}
+	register("Option", "cloned", ref(optT), nil, optT)
+	register("Option", "copied", ref(optT), nil, optT)
+	register("Option", "transpose", ref(optT), nil, &types.Named{Name: "Result"})
 
-	register("Index", "index", ref(nil), []types.Type{nil}, nil)
+	// Trait method stubs disabled for now.
+	// register("Into", "into", nil, []types.Type{nil}, nil)
+	// register("From", "from", nil, []types.Type{nil}, nil)
+
+	// ArchetypeGeneration static method.
+	archGen := &types.Named{Name: "ArchetypeGeneration"}
+	register("ArchetypeGeneration", "initial", nil, nil, archGen)
+
+	// IntoIterator trait stub disabled.
+	// register("IntoIterator", "into_iter", ref(nil), nil, iter)
 
 	// Slice, tuple, array synthetic names produced by typeName().
 	sliceT := &types.Named{Name: "slice"}
