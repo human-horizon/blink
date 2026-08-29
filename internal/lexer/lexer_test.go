@@ -29,6 +29,37 @@ func TestBasicTokens(t *testing.T) {
 	}
 }
 
+func TestHashToken(t *testing.T) {
+	l := New([]byte("#"))
+	if tok := l.Next(); tok.Kind != Hash {
+		t.Fatalf("expected hash, got %v", tok.Kind)
+	}
+}
+
+func TestPercentToken(t *testing.T) {
+	l := New([]byte("%"))
+	if tok := l.Next(); tok.Kind != Percent {
+		t.Fatalf("expected percent, got %v", tok.Kind)
+	}
+}
+
+func TestPipeToken(t *testing.T) {
+	l := New([]byte("| ||"))
+	if tok := l.Next(); tok.Kind != Pipe {
+		t.Fatalf("expected pipe, got %v", tok.Kind)
+	}
+	if tok := l.Next(); tok.Kind != Or {
+		t.Fatalf("expected OR, got %v", tok.Kind)
+	}
+}
+
+func TestQuestionToken(t *testing.T) {
+	l := New([]byte("?"))
+	if tok := l.Next(); tok.Kind != Question {
+		t.Fatalf("expected question, got %v", tok.Kind)
+	}
+}
+
 func TestStringLit(t *testing.T) {
 	src := []byte(`let s = "hello";`)
 	l := New(src)

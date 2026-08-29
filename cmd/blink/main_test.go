@@ -1,9 +1,72 @@
 package main
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
+
+func TestParseMemoryLimit(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int64
+	}{
+		{value: "512MiB", want: 512 << 20},
+		{value: "1GiB", want: 1 << 30},
+	}
+	for _, test := range tests {
+		got, err := parseMemoryLimit(test.value)
+		if err != nil || got != test.want {
+			t.Fatalf("parseMemoryLimit(%q) = %d, %v; want %d", test.value, got, err, test.want)
+		}
+	}
+	for _, value := range []string{"", "0GiB", "1GB", "GiB"} {
+		if _, err := parseMemoryLimit(value); err == nil {
+			t.Fatalf("parseMemoryLimit(%q) unexpectedly succeeded", value)
+		}
+	}
+}
+
+func TestLoadModulesCargoLayout(t *testing.T) {
+	tests := []struct {
+		name string
+		root string
+	}{
+		{name: "library", root: "lib.rs"},
+		{name: "binary", root: "main.rs"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			srcDir := filepath.Join(dir, "src")
+			if err := os.Mkdir(srcDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			root := "mod helper;\n"
+			if test.root == "main.rs" {
+				root += "fn main() {}\n"
+			}
+			if err := os.WriteFile(filepath.Join(srcDir, test.root), []byte(root), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(srcDir, "helper.rs"), []byte("fn helper() {}\n"), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			files, paths, _, err := loadModules(dir)
+			if err != nil {
+				t.Fatalf("loadModules failed: %v", err)
+			}
+			if len(files) != 2 || len(paths) != 2 {
+				t.Fatalf("expected root and module files, got %d files and %d paths", len(files), len(paths))
+			}
+			if paths[0] != filepath.Join(srcDir, test.root) {
+				t.Fatalf("expected root path %q, got %q", filepath.Join(srcDir, test.root), paths[0])
+			}
+		})
+	}
+}
 
 func TestCheckValidPhase1(t *testing.T) {
 	err := checkPath("../../testdata/phase1/valid")

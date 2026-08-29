@@ -4,8 +4,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"runtime/pprof"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/humanhorizon/blink/internal/ast"
 	"github.com/humanhorizon/blink/internal/checker"
@@ -15,6 +22,26 @@ import (
 )
 
 func main() {
+	if path := os.Getenv("BLINK_HEAPPROFILE"); path != "" {
+		go func() {
+			sig := make(chan os.Signal, 1)
+			signal.Notify(sig, syscall.SIGUSR1)
+			for range sig {
+				f, err := os.Create(path)
+				if err == nil {
+					_ = pprof.WriteHeapProfile(f)
+					_ = f.Close()
+				}
+			}
+		}()
+	}
+	stopMemoryGuard, err := startMemoryGuard()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	defer stopMemoryGuard()
+
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "usage: blink <check|build|run> <path>")
 		os.Exit(2)
@@ -89,6 +116,61 @@ func buildPath(path string) (string, error) {
 	return binary, nil
 }
 
+func startMemoryGuard() (func(), error) {
+	limit, err := configuredMemoryLimit()
+	if err != nil {
+		return func() {}, err
+	}
+	debug.SetMemoryLimit(limit)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				var stats runtime.MemStats
+				runtime.ReadMemStats(&stats)
+				if stats.HeapAlloc >= uint64(limit) {
+					fmt.Fprintf(os.Stderr, "blink: memory limit exceeded (%d bytes)\\n", limit)
+					os.Exit(1)
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { close(done) }, nil
+}
+
+func configuredMemoryLimit() (int64, error) {
+	value := os.Getenv("BLINK_MEMLIMIT")
+	if value == "" {
+		value = "1GiB"
+	}
+	return parseMemoryLimit(value)
+}
+
+func parseMemoryLimit(value string) (int64, error) {
+	value = strings.TrimSpace(value)
+	multipliers := map[string]uint64{
+		"MiB": 1 << 20,
+		"GiB": 1 << 30,
+	}
+	for suffix, multiplier := range multipliers {
+		if !strings.HasSuffix(value, suffix) {
+			continue
+		}
+		number := strings.TrimSpace(strings.TrimSuffix(value, suffix))
+		parsed, err := strconv.ParseUint(number, 10, 64)
+		if err != nil || parsed == 0 || parsed > uint64((1<<63-1)/int64(multiplier)) {
+			break
+		}
+		return int64(parsed * multiplier), nil
+	}
+	return 0, fmt.Errorf("invalid BLINK_MEMLIMIT %q; use a positive integer with MiB or GiB", value)
+}
+
 func findTCC() (string, error) {
 	if configured := os.Getenv("BLINK_TCC"); configured != "" {
 		if _, err := os.Stat(configured); err == nil {
@@ -115,6 +197,11 @@ func checkPath(path string) error {
 	if len(files) == 0 {
 		return fmt.Errorf("no .rs files found in %s", path)
 	}
+	if os.Getenv("BLINK_DEBUG") != "" {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		fmt.Fprintf(os.Stderr, "loaded %d files, heap_alloc=%d bytes\n", len(files), ms.HeapAlloc)
+	}
 	rep := &diag.Reporter{}
 	chk := checker.New(files, paths, rep, modPaths)
 	chk.Check()
@@ -125,9 +212,31 @@ func checkPath(path string) error {
 }
 
 func loadModules(dir string) ([]*ast.File, []string, [][]string, error) {
-	entries, err := os.ReadDir(dir)
+	rootDir := dir
+	root, err := findRootFile(rootDir, true)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if root == "" {
+		rootDir = filepath.Join(dir, "src")
+		root, err = findRootFile(rootDir, false)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if root == "" {
+		return nil, nil, nil, fmt.Errorf("no root .rs file in %s", dir)
+	}
+	return loadFile(filepath.Join(rootDir, root), []string{}, rootDir)
+}
+
+func findRootFile(dir string, allowAnyRustFile bool) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
 	}
 	var root string
 	for _, e := range entries {
@@ -139,17 +248,17 @@ func loadModules(dir string) ([]*ast.File, []string, [][]string, error) {
 			root = name
 			break
 		}
-		if root == "" && strings.HasSuffix(name, ".rs") {
+		if allowAnyRustFile && root == "" && strings.HasSuffix(name, ".rs") {
 			root = name
 		}
 	}
-	if root == "" {
-		return nil, nil, nil, fmt.Errorf("no root .rs file in %s", dir)
-	}
-	return loadFile(filepath.Join(dir, root), []string{}, dir)
+	return root, nil
 }
 
 func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string, [][]string, error) {
+	if os.Getenv("BLINK_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "loading %s\n", path)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("cannot read %s: %w", path, err)
@@ -159,6 +268,11 @@ func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string,
 	file, err := p.ParseFile()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("parse error in %s: %w", path, err)
+	}
+	if os.Getenv("BLINK_DEBUG") != "" {
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		fmt.Fprintf(os.Stderr, "  parsed %s: %d decls, heap_alloc=%d bytes\n", path, len(file.Decls), ms.HeapAlloc)
 	}
 	var childFiles []*ast.File
 	var childPaths []string

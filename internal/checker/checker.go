@@ -1,6 +1,9 @@
 package checker
 
 import (
+	"fmt"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -114,10 +117,21 @@ func (c *Checker) ExprType(expr ast.Expr) types.Type {
 
 func (c *Checker) Check() bool {
 	c.collect()
+	if os.Getenv("BLINK_DEBUG") != "" {
+		fmt.Fprintf(os.Stderr, "checker: %d files collected\n", len(c.Files))
+		var ms runtime.MemStats
+		runtime.ReadMemStats(&ms)
+		fmt.Fprintf(os.Stderr, "checker: heap_alloc=%d bytes after collect\n", ms.HeapAlloc)
+	}
 	for i, f := range c.Files {
 		c.currentIdx = i
 		c.currentPath = c.Paths[i]
 		c.checkFile(f, c.Paths[i], i)
+		if os.Getenv("BLINK_DEBUG") != "" && i%10 == 0 {
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			fmt.Fprintf(os.Stderr, "checker: file %d/%d heap_alloc=%d bytes\n", i, len(c.Files), ms.HeapAlloc)
+		}
 	}
 	return !c.Reporter.HasErrors()
 }
@@ -229,6 +243,9 @@ func (c *Checker) collect() {
 func (c *Checker) collectUse(fileIdx int, decl *ast.UseDecl) {
 	if len(decl.Path) == 0 {
 		c.errorf(decl.Pos, "empty use path")
+		return
+	}
+	if decl.Glob || decl.Group {
 		return
 	}
 	key := strings.Join(decl.Path, "::")
@@ -540,6 +557,9 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 				}
 				return info.ty
 			}
+			if builtinPath([]string{e.Name}) {
+				return &types.Named{Name: e.Name}
+			}
 			c.errorf(e.Pos, "cannot find value `%s` in this scope", e.Name)
 			return &types.Error{}
 		}
@@ -553,6 +573,12 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 		return c.checkBinary(e, env, loans, path)
 	case *ast.UnaryExpr:
 		return c.checkUnary(e, env, loans, path)
+	case *ast.CastExpr:
+		return c.checkCast(e, env, loans, path)
+	case *ast.ClosureExpr:
+		return c.checkClosure(e, env, loans, path)
+	case *ast.RangeExpr:
+		return c.checkRange(e, env, loans, path)
 	case *ast.CallExpr:
 		return c.checkCall(e, env, loans, path)
 	case *ast.BlockExpr:
@@ -607,6 +633,10 @@ func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
 	if method != "" {
 		m := c.findInherentMethod(typeKey, method)
 		if m == nil {
+			if builtinPath(e.Segments) {
+				c.exprTypes[e] = i32AnyType()
+				return c.exprTypes[e]
+			}
 			c.errorf(e.Pos, "no static method `%s` found for type `%s`", method, typeKey)
 			return &types.Error{}
 		}
@@ -633,6 +663,8 @@ func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
 	c.errorf(e.Pos, "unresolved path `%s`", strings.Join(e.Segments, "::"))
 	return &types.Error{}
 }
+
+func i32AnyType() types.Type { return types.I32 }
 
 func (c *Checker) resolvePathDetails(segments []string) (key string, isType bool, typeKey string, method string) {
 	expanded := c.expandImport(segments)
@@ -712,6 +744,25 @@ func (c *Checker) checkBinary(e *ast.BinaryExpr, env *environment, loans *borrow
 	}
 }
 
+func (c *Checker) checkCast(e *ast.CastExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	c.checkExpr(e.Expr, env, loans, path)
+	return c.resolveType(e.Ty, path, nil)
+}
+
+func (c *Checker) checkClosure(e *ast.ClosureExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	return c.checkExpr(e.Body, env, loans, path)
+}
+
+func (c *Checker) checkRange(e *ast.RangeExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	if e.From != nil {
+		c.checkExpr(e.From, env, loans, path)
+	}
+	if e.To != nil {
+		c.checkExpr(e.To, env, loans, path)
+	}
+	return types.I32
+}
+
 func (c *Checker) checkUnary(e *ast.UnaryExpr, env *environment, loans *borrowCtx, path string) types.Type {
 	ty := c.checkExpr(e.Operand, env, loans, path)
 	switch e.Op {
@@ -761,6 +812,10 @@ func (c *Checker) checkUnary(e *ast.UnaryExpr, env *environment, loans *borrowCt
 func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx, path string) types.Type {
 	switch fn := e.Func.(type) {
 	case *ast.Ident:
+		if builtinPath([]string{fn.Name}) {
+			c.exprTypes[e] = i32AnyType()
+			return c.exprTypes[e]
+		}
 		key := c.resolveName(fn.Name)
 		if !c.canAccess(key) {
 			c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
@@ -777,6 +832,10 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 		if method != "" {
 			m := c.findInherentMethod(typeKey, method)
 			if m == nil {
+				if builtinPath(fn.Segments) {
+					c.exprTypes[e] = i32AnyType()
+					return c.exprTypes[e]
+				}
 				c.errorf(fn.Pos, "no static method `%s` found for type `%s`", method, typeKey)
 				return &types.Error{}
 			}
@@ -785,6 +844,10 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 				return &types.Error{}
 			}
 			return c.checkFnCall(m, e.Args, nil, env, loans, path)
+		}
+		if builtinPath(fn.Segments) {
+			c.exprTypes[e] = i32AnyType()
+			return c.exprTypes[e]
 		}
 		if !c.canAccess(key) {
 			c.errorf(fn.Pos, "cannot find function `%s`", strings.Join(fn.Segments, "::"))
@@ -821,6 +884,10 @@ func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type
 	for i, arg := range args {
 		argTy := c.checkExpr(arg, env, loans, path)
 		paramTy := info.paramTypes[i]
+		if paramTy == nil {
+			// builtin stub placeholder: accept whatever the caller provided.
+			continue
+		}
 		if !types.Unify(paramTy, argTy, mapping, lifetimeMapping) && !isError(argTy) {
 			c.errorf(PosOf(args[i]), "expected `%s`, found `%s`", paramTy, argTy)
 		}
@@ -881,16 +948,22 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 		c.errorf(PosOf(field), "method `%s` is not an instance method", methodName)
 		return &types.Error{}
 	}
-	expectedSelf := &types.Ref{Elem: baseTy, IsMut: false}
-	if !m.selfType.Equals(expectedSelf) && !m.selfType.Equals(baseTy) {
-		c.errorf(PosOf(recvExpr), "expected `%s`, found `%s`", m.selfType, recvTy)
-		return &types.Error{}
+	if isBuiltinStub(m) {
+		// Builtin stubs use a placeholder self type; accept any matching base name.
+	} else {
+		expectedSelf := &types.Ref{Elem: baseTy, IsMut: false}
+		if !m.selfType.Equals(expectedSelf) && !m.selfType.Equals(baseTy) {
+			c.errorf(PosOf(recvExpr), "expected `%s`, found `%s`", m.selfType, recvTy)
+			return &types.Error{}
+		}
 	}
 	if loans != nil {
 		c.borrowShared(loans, recvExpr, recvTy)
 	}
 	minfo := *m
-	minfo.paramTypes = minfo.paramTypes[1:]
+	if !isBuiltinStub(m) && len(minfo.paramTypes) > 0 {
+		minfo.paramTypes = minfo.paramTypes[1:]
+	}
 	return c.checkFnCall(&minfo, args, baseTy, env, loans, path)
 }
 
@@ -921,7 +994,23 @@ func (c *Checker) findInherentMethod(typeName, method string) *fnInfo {
 			return info
 		}
 	}
+	if info := builtinMethod(typeName, method); info != nil {
+		// Mark as a stub so receiver-type checks can be relaxed.
+		if info.bounds == nil {
+			info.bounds = nil
+		}
+		return info
+	}
 	return nil
+}
+
+// isBuiltinStub returns true when the fnInfo was synthesised by the builtin
+// stub registry rather than loaded from a Rust declaration.
+func isBuiltinStub(info *fnInfo) bool {
+	if info == nil || info.decl != nil {
+		return false
+	}
+	return true
 }
 
 func (c *Checker) typeName(t types.Type) string {
@@ -1192,6 +1281,9 @@ func (c *Checker) checkMacroCall(e *ast.MacroCallExpr, env *environment, loans *
 		c.errorf(e.Pos, "cannot access macro `%s`", e.Name)
 		return &types.Error{}
 	}
+	if m.Body == nil {
+		return types.Unit
+	}
 	return c.checkExpr(m.Body, env, loans, path)
 }
 
@@ -1236,12 +1328,16 @@ func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types
 		return &types.Ref{Elem: c.resolveType(ty.Elem, path, genParams), IsMut: ty.IsMut, Lifetime: ty.Lifetime}
 	case *ast.ArrayType:
 		return &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Len: ty.Len}
+	case *ast.SliceType:
+		return &types.Slice{Elem: c.resolveType(ty.Elem, path, genParams)}
 	case *ast.TupleType:
 		elems := make([]types.Type, len(ty.ElementTypes))
 		for i, et := range ty.ElementTypes {
 			elems[i] = c.resolveType(et, path, genParams)
 		}
 		return &types.Tuple{Elems: elems}
+	case *ast.ImplTraitType:
+		return c.resolveType(ty.Trait, path, genParams)
 	default:
 		return &types.Error{}
 	}
@@ -1358,6 +1454,9 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 		if !cond.Equals(types.Bool) && !isError(cond) {
 			c.errorf(PosOf(st.Cond), "expected `bool`, found `%s`", cond)
 		}
+		c.checkBlock(st.Body, env, loans, ret, path)
+	case *ast.ForStmt:
+		c.checkExpr(st.Iter, env, loans, path)
 		c.checkBlock(st.Body, env, loans, ret, path)
 	case *ast.ExprStmt:
 		c.checkExpr(st.Expr, env, loans, path)

@@ -61,12 +61,13 @@ type FnDecl struct {
 	Params         []Param
 	Ret            Type // nil if no explicit return type (-> ())
 	Body           *BlockExpr
+	IsConst        bool
+	IsUnsafe       bool
 }
 
-func (FnDecl) astNode()     {}
-func (FnDecl) declNode()    {}
+func (FnDecl) astNode()         {}
+func (FnDecl) declNode()        {}
 func (d FnDecl) IsPublic() bool { return d.Pub }
-
 
 // Param represents a function parameter.
 type Param struct {
@@ -74,6 +75,7 @@ type Param struct {
 	Name   string
 	Ty     Type
 	IsSelf bool
+	IsMut  bool
 }
 
 // StructDecl represents a struct declaration.
@@ -87,14 +89,14 @@ type StructDecl struct {
 	Fields         []Field
 }
 
-func (StructDecl) astNode()  {}
-func (StructDecl) declNode() {}
+func (StructDecl) astNode()         {}
+func (StructDecl) declNode()        {}
 func (d StructDecl) IsPublic() bool { return d.Pub }
-
 
 // Field represents a struct field.
 type Field struct {
 	Pos  Pos
+	Pub  bool
 	Name string
 	Ty   Type
 }
@@ -108,10 +110,9 @@ type EnumDecl struct {
 	Variants  []Variant
 }
 
-func (EnumDecl) astNode()  {}
-func (EnumDecl) declNode() {}
+func (EnumDecl) astNode()         {}
+func (EnumDecl) declNode()        {}
 func (d EnumDecl) IsPublic() bool { return d.Pub }
-
 
 // Variant represents an enum variant.
 type Variant struct {
@@ -130,10 +131,9 @@ type TraitDecl struct {
 	Methods        []*FnDecl
 }
 
-func (TraitDecl) astNode()  {}
-func (TraitDecl) declNode() {}
+func (TraitDecl) astNode()         {}
+func (TraitDecl) declNode()        {}
 func (d TraitDecl) IsPublic() bool { return d.Pub }
-
 
 // ImplDecl represents an impl block (trait or inherent).
 type ImplDecl struct {
@@ -145,19 +145,20 @@ type ImplDecl struct {
 	Methods   []*FnDecl
 }
 
-func (ImplDecl) astNode()  {}
-func (ImplDecl) declNode() {}
+func (ImplDecl) astNode()       {}
+func (ImplDecl) declNode()      {}
 func (ImplDecl) IsPublic() bool { return true }
 
 // MacroRulesDecl represents a declarative macro definition.
 type MacroRulesDecl struct {
 	Pos  Pos
+	Pub  bool
 	Name string
 	Body Expr
 }
 
-func (MacroRulesDecl) astNode()  {}
-func (MacroRulesDecl) declNode() {}
+func (MacroRulesDecl) astNode()       {}
+func (MacroRulesDecl) declNode()      {}
 func (MacroRulesDecl) IsPublic() bool { return true }
 
 // MacroCallExpr represents an invocation of a declarative macro.
@@ -166,33 +167,56 @@ type MacroCallExpr struct {
 	Name string
 }
 
-func (MacroCallExpr) astNode() {}
+func (MacroCallExpr) astNode()  {}
 func (MacroCallExpr) exprNode() {}
 
 // ModDecl represents a module declaration.
 type ModDecl struct {
-	Pos       Pos
-	Pub       bool
-	Name      string
-	Inline    *File // non-nil for inline modules
-	File      string // file path for external modules
+	Pos    Pos
+	Pub    bool
+	Name   string
+	Inline *File  // non-nil for inline modules
+	File   string // file path for external modules
 }
 
-func (ModDecl) astNode()  {}
-func (ModDecl) declNode() {}
+func (ModDecl) astNode()         {}
+func (ModDecl) declNode()        {}
 func (d ModDecl) IsPublic() bool { return d.Pub }
 
 // UseDecl represents a use/import declaration.
 type UseDecl struct {
-	Pos    Pos
-	Path   []string
-	Alias  string // empty if no alias
+	Pos   Pos
+	Path  []string
+	Alias string // empty if no alias
+	Glob  bool
+	Group bool
 }
 
-func (UseDecl) astNode()  {}
-func (UseDecl) declNode() {}
+func (UseDecl) astNode()       {}
+func (UseDecl) declNode()      {}
 func (UseDecl) IsPublic() bool { return false }
 
+// ExternCrateDecl represents an external crate declaration.
+type ExternCrateDecl struct {
+	Pos   Pos
+	Name  string
+	Alias string
+}
+
+func (ExternCrateDecl) astNode()       {}
+func (ExternCrateDecl) declNode()      {}
+func (ExternCrateDecl) IsPublic() bool { return false }
+
+// MacroCallDecl represents an opaque item-level macro invocation.
+type MacroCallDecl struct {
+	Pos  Pos
+	Pub  bool
+	Name string
+}
+
+func (MacroCallDecl) astNode()       {}
+func (MacroCallDecl) declNode()      {}
+func (MacroCallDecl) IsPublic() bool { return false }
 
 // BlockExpr is a block statement/expression.
 type BlockExpr struct {
@@ -229,7 +253,7 @@ type PatIdent struct {
 	Name string
 }
 
-func (PatIdent) astNode()    {}
+func (PatIdent) astNode()     {}
 func (PatIdent) patternNode() {}
 
 // PatWildcard ignores the matched value.
@@ -237,7 +261,7 @@ type PatWildcard struct {
 	Pos Pos
 }
 
-func (PatWildcard) astNode()    {}
+func (PatWildcard) astNode()     {}
 func (PatWildcard) patternNode() {}
 
 // PatStruct matches a struct and binds its fields.
@@ -247,7 +271,7 @@ type PatStruct struct {
 	Fields []PatField
 }
 
-func (PatStruct) astNode()    {}
+func (PatStruct) astNode()     {}
 func (PatStruct) patternNode() {}
 
 // PatField is a single field binding inside a struct pattern.
@@ -265,7 +289,16 @@ type TupleType struct {
 	ElementTypes []Type
 }
 
-func (TupleType) astNode() {}
+// ImplTraitType is an `impl Trait` type.
+type ImplTraitType struct {
+	Pos   Pos
+	Trait Type
+}
+
+func (ImplTraitType) astNode()  {}
+func (ImplTraitType) typeNode() {}
+
+func (TupleType) astNode()  {}
 func (TupleType) typeNode() {}
 
 // UnsafeBlockExpr represents an unsafe block expression.
@@ -274,7 +307,7 @@ type UnsafeBlockExpr struct {
 	Body *BlockExpr
 }
 
-func (UnsafeBlockExpr) astNode() {}
+func (UnsafeBlockExpr) astNode()  {}
 func (UnsafeBlockExpr) exprNode() {}
 
 // TupleExpr is a tuple literal.
@@ -283,7 +316,7 @@ type TupleExpr struct {
 	Elements []Expr
 }
 
-func (TupleExpr) astNode() {}
+func (TupleExpr) astNode()  {}
 func (TupleExpr) exprNode() {}
 
 // ConstDecl is a compile-time constant.
@@ -295,8 +328,8 @@ type ConstDecl struct {
 	Value Expr
 }
 
-func (ConstDecl) astNode()  {}
-func (ConstDecl) declNode() {}
+func (ConstDecl) astNode()       {}
+func (ConstDecl) declNode()      {}
 func (ConstDecl) IsPublic() bool { return false }
 
 // StaticDecl is a global static item.
@@ -308,9 +341,21 @@ type StaticDecl struct {
 	Value Expr
 }
 
-func (StaticDecl) astNode()  {}
-func (StaticDecl) declNode() {}
+func (StaticDecl) astNode()       {}
+func (StaticDecl) declNode()      {}
 func (StaticDecl) IsPublic() bool { return false }
+
+// TypeAliasDecl is a type alias declaration.
+type TypeAliasDecl struct {
+	Pos  Pos
+	Pub  bool
+	Name string
+	Ty   Type
+}
+
+func (TypeAliasDecl) astNode()       {}
+func (TypeAliasDecl) declNode()      {}
+func (TypeAliasDecl) IsPublic() bool { return false }
 
 // PatTuple matches a tuple and binds its elements.
 type PatTuple struct {
@@ -318,7 +363,7 @@ type PatTuple struct {
 	Elements []Pattern
 }
 
-func (PatTuple) astNode()    {}
+func (PatTuple) astNode()     {}
 func (PatTuple) patternNode() {}
 
 // AssignStmt is an assignment statement.
@@ -395,24 +440,54 @@ func (Ident) exprNode() {}
 
 // BinaryExpr is a binary expression.
 type BinaryExpr struct {
-	Pos  Pos
-	Op   string
-	Left Expr
+	Pos   Pos
+	Op    string
+	Left  Expr
 	Right Expr
 }
 
 func (BinaryExpr) astNode()  {}
 func (BinaryExpr) exprNode() {}
 
+// RangeExpr is a range expression (a..b, a.., ..b, ..).
+type RangeExpr struct {
+	Pos  Pos
+	From Expr
+	To   Expr
+}
+
+func (RangeExpr) astNode()  {}
+func (RangeExpr) exprNode() {}
+
+// ClosureExpr is a closure expression `|args| body`.
+type ClosureExpr struct {
+	Pos  Pos
+	Args []string
+	Body Expr
+}
+
+func (ClosureExpr) astNode()  {}
+func (ClosureExpr) exprNode() {}
+
 // UnaryExpr is a unary expression.
 type UnaryExpr struct {
-	Pos    Pos
-	Op     string
+	Pos     Pos
+	Op      string
 	Operand Expr
 }
 
 func (UnaryExpr) astNode()  {}
 func (UnaryExpr) exprNode() {}
+
+// CastExpr is a numeric `as` cast.
+type CastExpr struct {
+	Pos  Pos
+	Expr Expr
+	Ty   Type
+}
+
+func (CastExpr) astNode()  {}
+func (CastExpr) exprNode() {}
 
 // CallExpr is a function call.
 type CallExpr struct {
@@ -444,6 +519,17 @@ type WhileStmt struct {
 
 func (WhileStmt) astNode()  {}
 func (WhileStmt) stmtNode() {}
+
+// ForStmt is a for-in loop: `for pattern in expr { body }`.
+type ForStmt struct {
+	Pos  Pos
+	Pat  Pattern
+	Iter Expr
+	Body *BlockExpr
+}
+
+func (ForStmt) astNode()  {}
+func (ForStmt) stmtNode() {}
 
 // FieldExpr accesses a field on a struct.
 type FieldExpr struct {
@@ -521,3 +607,12 @@ type ArrayType struct {
 
 func (ArrayType) astNode()  {}
 func (ArrayType) typeNode() {}
+
+// SliceType is a slice/unsized array type [T].
+type SliceType struct {
+	Pos  Pos
+	Elem Type
+}
+
+func (SliceType) astNode()  {}
+func (SliceType) typeNode() {}

@@ -8,10 +8,10 @@ import (
 
 // Lexer tokenizes Rust-like source.
 type Lexer struct {
-	src  []byte
-	pos  int
-	tok  Token
-	err  error
+	src []byte
+	pos int
+	tok Token
+	err error
 }
 
 // New creates a new lexer for the given source.
@@ -87,7 +87,23 @@ func (l *Lexer) Next() Token {
 			l.pos++
 			return Token{Kind: EqEq, Text: "==", Pos: start}
 		}
+		if l.peek() == '>' {
+			l.pos++
+			return Token{Kind: FatArrow, Text: "=>", Pos: start}
+		}
 		return Token{Kind: Eq, Text: "=", Pos: start}
+	case '#':
+		l.pos++
+		return Token{Kind: Hash, Text: "#", Pos: start}
+	case '$':
+		l.pos++
+		return Token{Kind: Dollar, Text: "$", Pos: start}
+	case '?':
+		l.pos++
+		return Token{Kind: Question, Text: "?", Pos: start}
+	case '%':
+		l.pos++
+		return Token{Kind: Percent, Text: "%", Pos: start}
 	case '!':
 		l.pos++
 		if l.peek() == '=' {
@@ -107,8 +123,7 @@ func (l *Lexer) Next() Token {
 			l.pos++
 			return Token{Kind: Or, Text: "||", Pos: start}
 		}
-		l.err = fmt.Errorf("unexpected character %q at offset %d", ch, start)
-		return Token{Kind: EOF, Pos: start}
+		return Token{Kind: Pipe, Text: "|", Pos: start}
 	case '&':
 		l.pos++
 		if l.peek() == '&' {
@@ -227,4 +242,3 @@ func (l *Lexer) readString(start int) Token {
 	l.err = fmt.Errorf("unterminated string at offset %d", start)
 	return Token{Kind: EOF, Pos: start}
 }
-

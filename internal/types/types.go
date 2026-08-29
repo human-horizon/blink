@@ -20,7 +20,7 @@ type Builtin struct {
 	Name string
 }
 
-func (b *Builtin) typeMarker() {}
+func (b *Builtin) typeMarker()    {}
 func (b *Builtin) String() string { return b.Name }
 func (b *Builtin) Equals(other Type) bool {
 	o, ok := other.(*Builtin)
@@ -32,7 +32,7 @@ type Generic struct {
 	Name string
 }
 
-func (g *Generic) typeMarker() {}
+func (g *Generic) typeMarker()    {}
 func (g *Generic) String() string { return g.Name }
 func (g *Generic) Equals(other Type) bool {
 	o, ok := other.(*Generic)
@@ -169,7 +169,7 @@ type Named struct {
 	Name string
 }
 
-func (n *Named) typeMarker() {}
+func (n *Named) typeMarker()    {}
 func (n *Named) String() string { return n.Name }
 func (n *Named) Equals(other Type) bool {
 	o, ok := other.(*Named)
@@ -212,6 +212,18 @@ func (a *Array) String() string {
 func (a *Array) Equals(other Type) bool {
 	o, ok := other.(*Array)
 	return ok && o.Len == a.Len && a.Elem.Equals(o.Elem)
+}
+
+// Slice is an unsized slice type [T].
+type Slice struct {
+	Elem Type
+}
+
+func (s *Slice) typeMarker()    {}
+func (s *Slice) String() string { return "[" + s.Elem.String() + "]" }
+func (s *Slice) Equals(other Type) bool {
+	o, ok := other.(*Slice)
+	return ok && s.Elem.Equals(o.Elem)
 }
 
 // Tuple is a tuple type.
@@ -282,6 +294,6 @@ func IsCopy(t Type) bool {
 // Error is a sentinel type used when an expression has an error type.
 type Error struct{}
 
-func (e *Error) typeMarker() {}
-func (e *Error) String() string { return "<error>" }
+func (e *Error) typeMarker()            {}
+func (e *Error) String() string         { return "<error>" }
 func (e *Error) Equals(other Type) bool { _, ok := other.(*Error); return ok }

@@ -17,6 +17,7 @@ const (
 	If
 	Else
 	While
+	Match
 	Return
 	Struct
 	Enum
@@ -46,8 +47,13 @@ const (
 	Bang
 	And
 	Or
+	Pipe
+	Percent
 
 	// Punctuation
+	Hash
+	Dollar
+	Question
 	LParen
 	RParen
 	LBrace
@@ -59,7 +65,8 @@ const (
 	Colon
 	ColonColon
 	Dot
-	Arrow // ->
+	Arrow    // ->
+	FatArrow // =>
 )
 
 // Token represents a single lexical token.
@@ -75,6 +82,7 @@ var keywords = map[string]TokenKind{
 	"if":     If,
 	"else":   Else,
 	"while":  While,
+	"match":  Match,
 	"return": Return,
 	"struct": Struct,
 	"enum":   Enum,
