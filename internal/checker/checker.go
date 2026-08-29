@@ -364,27 +364,29 @@ func (c *Checker) collectImpl(impl *ast.ImplDecl) {
 		}
 	} else {
 		tr, ok := c.traits[impl.Trait]
-		if !ok {
+		if !ok && !isBuiltinTrait(impl.Trait) {
 			c.errorf(impl.Pos, "unknown trait `%s`", impl.Trait)
 			return
 		}
-		for name, expected := range tr.methods {
-			provided, ok := methods[name]
-			if !ok {
-				c.errorf(impl.Pos, "missing method `%s` for trait `%s`", name, impl.Trait)
-				continue
+		if ok {
+			for name, expected := range tr.methods {
+				provided, exists := methods[name]
+				if !exists {
+					c.errorf(impl.Pos, "missing method `%s` for trait `%s`", name, impl.Trait)
+					continue
+				}
+				expectedSub := c.substSelf(expected, forType)
+				if !c.fnSigMatches(expectedSub, provided) {
+					c.errorf(provided.decl.Pos, "method `%s` has incompatible signature with trait `%s`", name, impl.Trait)
+				}
 			}
-			expectedSub := c.substSelf(expected, forType)
-			if !c.fnSigMatches(expectedSub, provided) {
-				c.errorf(provided.decl.Pos, "method `%s` has incompatible signature with trait `%s`", name, impl.Trait)
+			for name := range methods {
+				if _, exists := tr.methods[name]; !exists {
+					c.errorf(methods[name].decl.Pos, "method `%s` is not part of trait `%s`", name, impl.Trait)
+				}
 			}
 		}
-		for name := range methods {
-			if _, ok := tr.methods[name]; !ok {
-				c.errorf(methods[name].decl.Pos, "method `%s` is not part of trait `%s`", name, impl.Trait)
-			}
-		}
-		if _, ok := c.traitImpls[impl.Trait]; !ok {
+		if _, exists := c.traitImpls[impl.Trait]; !exists {
 			c.traitImpls[impl.Trait] = make(map[string]*implInfo)
 		}
 		c.traitImpls[impl.Trait][typeName] = &implInfo{decl: impl, trait: impl.Trait, forType: forType, bounds: impl.Bounds, methods: methods}
@@ -488,6 +490,12 @@ func (c *Checker) checkFn(fn *ast.FnDecl, path string, idx int) {
 func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 	c.currentIdx = idx
 	c.currentPath = path
+	if impl.Trait != "" && isBuiltinTrait(impl.Trait) {
+		// Standard-library trait bodies are unavailable in a source-only check.
+		// Collection still records the methods for call resolution, while body
+		// checking would produce false errors from missing associated types.
+		return
+	}
 	forType := c.resolveType(impl.ForType, path, nil)
 	typeName := c.typeName(forType)
 	var implMethods map[string]*fnInfo

@@ -39,6 +39,9 @@ var builtinTypes = map[string]struct{}{
 	"f32":                {},
 	"f64":                {},
 	"bool":               {},
+	"Into":               {},
+	"Index":              {},
+	"IndexMut":           {},
 	"ComponentId":        {},
 	"BundleId":           {},
 	"Entity":             {},
@@ -97,6 +100,15 @@ func builtinMethod(typeName, methodName string) *fnInfo {
 	}
 }
 
+func isBuiltinTrait(name string) bool {
+	switch name {
+	case "Index", "IndexMut", "Into", "From":
+		return true
+	default:
+		return false
+	}
+}
+
 func init() {
 	i32 := types.I32
 	boolT := types.Bool
@@ -125,6 +137,7 @@ func init() {
 	register("Vec", "pop", refMut(vec), nil, opt)
 	register("Vec", "iter", ref(vec), nil, iter)
 	register("Vec", "into_iter", ref(vec), nil, iter)
+	register("Vec", "into", ref(vec), nil, &types.Error{})
 	register("Vec", "reserve", refMut(vec), []types.Type{i32}, unitT)
 	register("Vec", "reserve_exact", refMut(vec), []types.Type{i32}, unitT)
 	register("Vec", "clear", refMut(vec), nil, unitT)
@@ -239,15 +252,17 @@ func init() {
 	register("Vec", "last", ref(vec2), nil, opt)
 	boxT := &types.Named{Name: "Box"}
 	register("Box", "get", ref(boxT), []types.Type{nil}, nil)
+	register("Box", "get_unchecked", ref(boxT), []types.Type{nil}, nil)
 	register("Box", "downcast", refMut(boxT), []types.Type{nil}, nil)
 	optT := &types.Named{Name: "Option"}
 	register("Option", "cloned", ref(optT), nil, optT)
 	register("Option", "copied", ref(optT), nil, optT)
 	register("Option", "transpose", ref(optT), nil, &types.Named{Name: "Result"})
 
-	// Trait method stubs disabled for now.
-	// register("Into", "into", nil, []types.Type{nil}, nil)
-	// register("From", "from", nil, []types.Type{nil}, nil)
+	// Standard conversion trait stubs for source trees without libstd.
+	intoT := &types.Named{Name: "Into"}
+	register("Into", "into", ref(intoT), nil, &types.Error{})
+	register("From", "from", nil, []types.Type{nil}, &types.Error{})
 
 	// ArchetypeGeneration static method.
 	archGen := &types.Named{Name: "ArchetypeGeneration"}
