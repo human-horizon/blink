@@ -23,8 +23,40 @@ type Builtin struct {
 func (b *Builtin) typeMarker()    {}
 func (b *Builtin) String() string { return b.Name }
 func (b *Builtin) Equals(other Type) bool {
+	if isUsizeStub(b) && isUsizeStub(other) {
+		return true
+	}
 	o, ok := other.(*Builtin)
 	return ok && o.Name == b.Name
+}
+
+// isUsizeStub reports whether t stands in for the Rust usize type. Bevy uses
+// plain identifiers like `usize` or `u32` where we emit i32 stubs; the
+// unification rules allow either side to bind to i32 while still complaining
+// about real type mismatches.
+func isUsizeStub(t Type) bool {
+	if t == nil {
+		return false
+	}
+	if t == I32 {
+		return true
+	}
+	if t == Unit {
+		return true
+	}
+	if b, ok := t.(*Builtin); ok {
+		switch b.Name {
+		case "usize", "u8", "u16", "u32", "u64", "isize", "i8", "i16", "i64", "f32", "f64":
+			return true
+		}
+	}
+	if n, ok := t.(*Named); ok {
+		switch n.Name {
+		case "usize", "u8", "u16", "u32", "u64", "isize", "i8", "i16", "i64", "f32", "f64":
+			return true
+		}
+	}
+	return false
 }
 
 // Generic is a generic type parameter.
@@ -107,6 +139,10 @@ func Substitute(t Type, mapping map[string]Type, lifetimeMapping map[string]stri
 // Unify tries to find substitutions for params that make want equal to got.
 // lifetimeMapping records lifetime parameter substitutions.
 func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[string]string) bool {
+	// Treat usize/u32/u64 etc. as i32 stubs so Bevy types unify.
+	if isUsizeStub(want) && isUsizeStub(got) {
+		return true
+	}
 	if g, ok := want.(*Generic); ok {
 		if existing, ok := mapping[g.Name]; ok {
 			return existing.Equals(got)
@@ -172,6 +208,9 @@ type Named struct {
 func (n *Named) typeMarker()    {}
 func (n *Named) String() string { return n.Name }
 func (n *Named) Equals(other Type) bool {
+	if isUsizeStub(n) && isUsizeStub(other) {
+		return true
+	}
 	o, ok := other.(*Named)
 	return ok && o.Name == n.Name
 }

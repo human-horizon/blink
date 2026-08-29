@@ -1021,6 +1021,12 @@ func (c *Checker) typeName(t types.Type) string {
 		if named, ok := ty.Base.(*types.Named); ok {
 			return named.Name
 		}
+	case *types.Slice:
+		return "slice"
+	case *types.Tuple:
+		return "tuple"
+	case *types.Array:
+		return "array"
 	}
 	return ""
 }

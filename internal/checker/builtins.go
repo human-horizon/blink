@@ -27,6 +27,9 @@ var builtinTypes = map[string]struct{}{
 	"Range":              {},
 	"RangeFull":          {},
 	"RangeInclusive":     {},
+	"slice":              {},
+	"tuple":              {},
+	"array":              {},
 	"ComponentId":        {},
 	"BundleId":           {},
 	"Entity":             {},
@@ -211,6 +214,24 @@ func init() {
 	}
 
 	register("Index", "index", ref(nil), []types.Type{nil}, nil)
+
+	// Slice, tuple, array synthetic names produced by typeName().
+	sliceT := &types.Named{Name: "slice"}
+	tupleT := &types.Named{Name: "tuple"}
+	arrayT := &types.Named{Name: "array"}
+	register("slice", "len", ref(sliceT), nil, i32)
+	register("slice", "is_empty", ref(sliceT), nil, boolT)
+	register("slice", "get", ref(sliceT), []types.Type{i32}, opt)
+	register("slice", "iter", ref(sliceT), nil, iter)
+	register("slice", "first", ref(sliceT), nil, opt)
+	register("slice", "last", ref(sliceT), nil, opt)
+	register("slice", "contains", ref(sliceT), []types.Type{nil}, boolT)
+	register("slice", "as_ptr", ref(sliceT), nil, nil)
+	register("slice", "len_usize", ref(sliceT), nil, i32)
+	register("tuple", "0", ref(tupleT), nil, nil)
+	register("tuple", "1", ref(tupleT), nil, nil)
+	register("array", "len", ref(arrayT), nil, i32)
+	register("array", "is_empty", ref(arrayT), nil, boolT)
 }
 
 // builtinPath returns true when a fully-qualified path like Vec::new, Some,
