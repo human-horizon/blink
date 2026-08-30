@@ -247,3 +247,25 @@ fn main() -> i32 {
 		t.Fatalf("unexpected errors: %s", r.String())
 	}
 }
+
+func TestForLoopPatternBinding(t *testing.T) {
+	src := `
+fn main() -> i32 {
+    let x = [1, 2, 3];
+    let mut total = 0;
+    for item in x {
+        total = total + item;
+    }
+    for (idx, _v) in x.enumerate() {
+        total = total + idx;
+    }
+    total
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}

@@ -983,6 +983,26 @@ func (c *Checker) deref(t types.Type) types.Type {
 	return t
 }
 
+// iteratorElem returns the element type of a for-in loop iterator. When the
+// element type cannot be determined statically (e.g. a builtin stub that does
+// not track generic args), it returns a fresh generic placeholder so the loop
+// variables still enter scope without a spurious "cannot find value" error.
+func (c *Checker) iteratorElem(iter types.Type) types.Type {
+	switch ti := iter.(type) {
+	case *types.Ref:
+		return c.iteratorElem(ti.Elem)
+	case *types.Applied:
+		if len(ti.Args) == 1 {
+			return ti.Args[0]
+		}
+	case *types.Array:
+		return ti.Elem
+	case *types.Tuple:
+		return ti
+	}
+	return &types.Generic{Name: "_"}
+}
+
 func (c *Checker) isTypeName(expr ast.Expr, env *environment) bool {
 	ident, ok := expr.(*ast.Ident)
 	if !ok {
@@ -1489,7 +1509,9 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 		}
 		c.checkBlock(st.Body, env, loans, ret, path)
 	case *ast.ForStmt:
-		c.checkExpr(st.Iter, env, loans, path)
+		iterTy := c.checkExpr(st.Iter, env, loans, path)
+		elemTy := c.iteratorElem(iterTy)
+		c.checkPattern(st.Pat, elemTy, env, true, path)
 		c.checkBlock(st.Body, env, loans, ret, path)
 	case *ast.ExprStmt:
 		c.checkExpr(st.Expr, env, loans, path)
@@ -1512,6 +1534,16 @@ func (c *Checker) checkPattern(pat ast.Pattern, ty types.Type, env *environment,
 }
 
 func (c *Checker) checkTuplePattern(pat *ast.PatTuple, ty types.Type, env *environment, isMut bool, path string) {
+	// When the enclosing element type is an unknown generic placeholder (e.g. a
+	// builtin iterator whose Item type is not tracked), bind each element to the
+	// same placeholder so tuple destructuring in for-loops keeps variables in
+	// scope without a spurious type error.
+	if g, ok := ty.(*types.Generic); ok && len(pat.Elements) > 0 {
+		for _, elem := range pat.Elements {
+			c.checkPattern(elem, g, env, isMut, path)
+		}
+		return
+	}
 	t, ok := ty.(*types.Tuple)
 	if !ok {
 		if !isError(ty) {
