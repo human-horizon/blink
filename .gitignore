@@ -3,3 +3,4 @@ build/
 **/build/
 
 benchmarks/bevy/
+.DS_Store
