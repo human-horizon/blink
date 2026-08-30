@@ -1117,6 +1117,20 @@ func (c *Checker) checkField(e *ast.FieldExpr, env *environment, loans *borrowCt
 				return &types.Error{}
 			}
 			return t.Elems[idx]
+		case *types.Named:
+			// Newtype tuple structs (e.g. ArchetypeRow(NonMaxU32)) store
+			// their fields under `_0`/`_1` keys in c.structs.
+			if key := c.resolveName(t.Name); c.canAccess(key) {
+				if st, ok := c.structs[key]; ok {
+					if fty, ok := st.fields["_"+e.Field]; ok {
+						return fty
+					}
+				}
+			}
+			if !isError(base) {
+				c.errorf(PosOf(e.Expr), "expected tuple, found `%s`", base)
+			}
+			return &types.Error{}
 		default:
 			if !isError(base) {
 				c.errorf(PosOf(e.Expr), "expected tuple, found `%s`", base)
@@ -1607,6 +1621,7 @@ func (c *Checker) checkTuplePattern(pat *ast.PatTuple, ty types.Type, env *envir
 	t, ok := ty.(*types.Tuple)
 	if !ok {
 		if !isError(ty) {
+			fmt.Fprintf(os.Stderr, "DEBUG tp pos=%d ty=%s\n", pat.Pos, typeStr(ty))
 			c.errorf(pat.Pos, "expected tuple, found `%s`", ty)
 		}
 		return
