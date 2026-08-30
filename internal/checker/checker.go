@@ -1381,10 +1381,22 @@ func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types
 		}
 		return &types.Tuple{Elems: elems}
 	case *ast.ImplTraitType:
-		return c.resolveType(ty.Trait, path, genParams)
+		return c.implTraitBase(ty.Trait, path, genParams)
 	default:
 		return &types.Error{}
 	}
+}
+
+// implTraitBase resolves an `impl Trait<...>` type to just its base trait
+// name, discarding associated type bounds such as `Item = T`. This lets a
+// concrete builtin iterator stub (which tracks only the base name) unify with
+// a declaration that spells out its Item type.
+func (c *Checker) implTraitBase(t ast.Type, path string, genParams []string) types.Type {
+	resolved := c.resolveType(t, path, genParams)
+	if app, ok := resolved.(*types.Applied); ok {
+		return app.Base
+	}
+	return resolved
 }
 
 func (c *Checker) errorf(pos ast.Pos, format string, args ...interface{}) {

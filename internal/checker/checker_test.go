@@ -274,6 +274,22 @@ fn main() -> i32 {
 		t.Fatalf("unexpected errors: %s", r.String())
 	}
 }
+func TestImplTraitReturn(t *testing.T) {
+	src := `
+fn main() -> i32 {
+    let x = [1, 2, 3];
+    let it = x.iter();
+    let n = it.count();
+    n
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
 
 func TestForLoopPatternBinding(t *testing.T) {
 	src := `
