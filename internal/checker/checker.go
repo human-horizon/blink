@@ -21,6 +21,7 @@ type Checker struct {
 	Reporter    *diag.Reporter
 	currentIdx  int
 	currentPath string
+	currentSelf types.Type
 	fns         map[string]*fnInfo
 	structs     map[string]*structInfo
 	enums       map[string]*enumInfo
@@ -498,6 +499,7 @@ func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 	}
 	forType := c.resolveType(impl.ForType, path, nil)
 	typeName := c.typeName(forType)
+	c.currentSelf = forType
 	var implMethods map[string]*fnInfo
 	if impl.Trait == "" {
 		implMethods = c.inherent[typeName]
@@ -1231,6 +1233,11 @@ func (c *Checker) checkIndex(e *ast.IndexExpr, env *environment, loans *borrowCt
 }
 
 func (c *Checker) checkStructLit(e *ast.StructLit, env *environment, loans *borrowCtx, path string) types.Type {
+	if e.Name == "Self" && c.currentSelf != nil {
+		// `Self { .. }` inside an impl resolves to the impl's target type.
+		c.exprTypes[e] = c.currentSelf
+		return c.currentSelf
+	}
 	key := c.resolveName(e.Name)
 	if !c.canAccess(key) {
 		// Bevy std-lib types are not parsed; accept their struct literals loosely.
