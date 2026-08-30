@@ -251,9 +251,16 @@ func init() {
 	ci := &types.Named{Name: "ComponentIndex"}
 	register("ComponentIndex", "entry", refMut(ci), []types.Type{nil}, &types.Named{Name: "Entry"})
 	register("ComponentIndex", "or_default", refMut(ci), []types.Type{nil}, nil)
+	register("ComponentIndex", "get", ref(ci), []types.Type{nil}, opt)
+	register("ComponentIndex", "get_mut", refMut(ci), []types.Type{nil}, opt)
+	register("ComponentIndex", "contains_key", ref(ci), []types.Type{nil}, boolT)
+	register("ComponentIndex", "insert", refMut(ci), []types.Type{nil, nil}, opt)
 	vec2 := &types.Named{Name: "Vec"}
+	register("Vec", "get", ref(vec2), []types.Type{i32}, opt)
+	register("Vec", "get_mut", refMut(vec2), []types.Type{i32}, opt)
 	register("Vec", "get_unchecked_mut", refMut(vec2), []types.Type{i32}, nil)
 	register("Vec", "get_unchecked", ref(vec2), []types.Type{i32}, nil)
+	register("Vec", "get_disjoint_unchecked_mut", refMut(vec2), []types.Type{nil}, nil)
 	register("Vec", "swap_remove", refMut(vec2), []types.Type{i32}, nil)
 	register("Vec", "first", ref(vec2), nil, opt)
 	register("Vec", "last", ref(vec2), nil, opt)

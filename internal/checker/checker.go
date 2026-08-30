@@ -677,8 +677,16 @@ func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
 		}
 	}
 	if builtinPath(e.Segments) {
-		c.exprTypes[e] = i32AnyType()
-		return c.exprTypes[e]
+		// Enum variant / const paths on builtin types carry their base type,
+		// not a raw integer. Using the structural type (e.g. ArchetypeFlags)
+		// avoids spurious mismatches when the value is returned or compared.
+		name := e.Segments[len(e.Segments)-1]
+		if len(e.Segments) >= 2 {
+			name = e.Segments[0]
+		}
+		ty := &types.Named{Name: name}
+		c.exprTypes[e] = ty
+		return ty
 	}
 	c.errorf(e.Pos, "unresolved path `%s`", strings.Join(e.Segments, "::"))
 	return &types.Error{}
