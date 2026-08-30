@@ -56,6 +56,9 @@ var builtinTypes = map[string]struct{}{
 	"NonMax":             {},
 	"SparseSet":          {},
 	"ImmutableSparseSet": {},
+	"ComponentIndex":     {},
+	"Edges":              {},
+	"Entry":              {},
 	"Archetype":          {},
 	"Archetypes":         {},
 	"Bundle":             {},
@@ -255,6 +258,10 @@ func init() {
 	register("ComponentIndex", "get_mut", refMut(ci), []types.Type{nil}, opt)
 	register("ComponentIndex", "contains_key", ref(ci), []types.Type{nil}, boolT)
 	register("ComponentIndex", "insert", refMut(ci), []types.Type{nil, nil}, opt)
+	// HashMap entry API.
+	entryT := &types.Named{Name: "Entry"}
+	register("Entry", "or_default", refMut(entryT), nil, nil)
+	register("Entry", "or_insert", refMut(entryT), []types.Type{nil}, nil)
 	vec2 := &types.Named{Name: "Vec"}
 	register("Vec", "get", ref(vec2), []types.Type{i32}, opt)
 	register("Vec", "get_mut", refMut(vec2), []types.Type{i32}, opt)
