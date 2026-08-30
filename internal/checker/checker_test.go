@@ -248,6 +248,33 @@ fn main() -> i32 {
 	}
 }
 
+func TestMutSelfBorrow(t *testing.T) {
+	src := `
+struct Counter { value: i32 }
+
+impl Counter {
+    fn bump(&mut self) {
+        self.value = self.value + 1;
+    }
+    fn get(&self) -> i32 {
+        self.value
+    }
+}
+
+fn main() -> i32 {
+    let mut c = Counter { value: 0 };
+    c.bump();
+    c.get()
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
 func TestForLoopPatternBinding(t *testing.T) {
 	src := `
 fn main() -> i32 {

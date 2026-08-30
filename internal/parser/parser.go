@@ -504,15 +504,17 @@ func (p *Parser) parseParam() ast.Param {
 	paramPos := ast.Pos(p.tok.Pos)
 	if p.tok.Kind == lexer.And {
 		p.next()
+		isMut := false
 		if p.tok.Kind == lexer.Ident && p.tok.Text == "mut" {
 			p.next()
+			isMut = true
 		}
 		if (p.tok.Kind == lexer.Ident && p.tok.Text == "self") || p.tok.Kind == lexer.Self {
 			p.next()
-			return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
+			return ast.Param{Pos: paramPos, Name: "self", IsSelf: true, IsMut: isMut}
 		}
 		p.setErr("expected `self` after `&`")
-		return ast.Param{Pos: paramPos, Name: "self", IsSelf: true}
+		return ast.Param{Pos: paramPos, Name: "self", IsSelf: true, IsMut: isMut}
 	}
 	if (p.tok.Kind == lexer.Ident && p.tok.Text == "self") || p.tok.Kind == lexer.Self {
 		p.next()

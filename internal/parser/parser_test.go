@@ -141,6 +141,23 @@ func TestParseMethodModifiers(t *testing.T) {
 	}
 }
 
+func TestParseMutSelfParam(t *testing.T) {
+	f, err := parse("impl Item { fn set(&mut self, v: i32) { self.x = v; } }")
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	implDecl, ok := f.Decls[0].(*ast.ImplDecl)
+	if !ok || len(implDecl.Methods) == 0 {
+		t.Fatalf("expected impl with methods: %+v", f.Decls[0])
+	}
+	if len(implDecl.Methods[0].Params) == 0 || !implDecl.Methods[0].Params[0].IsSelf {
+		t.Fatalf("expected self param")
+	}
+	if !implDecl.Methods[0].Params[0].IsMut {
+		t.Fatalf("expected &mut self receiver to be marked IsMut")
+	}
+}
+
 func TestParseFieldVisibility(t *testing.T) {
 	if _, err := parse("struct Item { pub value: i32, pub(crate) other: bool }"); err != nil {
 		t.Fatalf("parse error: %v", err)

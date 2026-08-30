@@ -517,7 +517,14 @@ func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 			continue
 		}
 		env := newEnv(nil)
-		env.set("self", &types.Ref{Elem: forType, IsMut: false}, false)
+		selfMut := false
+		for _, p := range m.Params {
+			if p.IsSelf {
+				selfMut = p.IsMut
+				break
+			}
+		}
+		env.set("self", &types.Ref{Elem: forType, IsMut: selfMut}, selfMut)
 		for i, p := range m.Params {
 			if !p.IsSelf {
 				env.set(p.Name, minfo.paramTypes[i], true)
