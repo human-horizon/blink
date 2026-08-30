@@ -676,6 +676,10 @@ func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
 			return &types.Named{Name: "fn"}
 		}
 	}
+	if builtinPath(e.Segments) {
+		c.exprTypes[e] = i32AnyType()
+		return c.exprTypes[e]
+	}
 	c.errorf(e.Pos, "unresolved path `%s`", strings.Join(e.Segments, "::"))
 	return &types.Error{}
 }

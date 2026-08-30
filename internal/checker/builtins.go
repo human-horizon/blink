@@ -67,6 +67,7 @@ var builtinTypes = map[string]struct{}{
 	"Event":              {},
 	"EventKey":           {},
 	"StorageType":        {},
+	"ComponentStatus":    {},
 	"World":              {},
 	"Query":              {},
 	"QueryState":         {},
