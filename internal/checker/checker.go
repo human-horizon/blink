@@ -849,12 +849,16 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 			c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
 			return &types.Error{}
 		}
-		info, ok := c.fns[key]
-		if !ok {
-			c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
-			return &types.Error{}
+		if info, ok := c.fns[key]; ok {
+			return c.checkFnCall(info, e.Args, nil, env, loans, path)
 		}
-		return c.checkFnCall(info, e.Args, nil, env, loans, path)
+		// Tuple/unit struct constructor: `Name(args)` is a value of the struct type.
+		if _, ok := c.structs[key]; ok {
+			c.exprTypes[e] = &types.Named{Name: fn.Name}
+			return c.exprTypes[e]
+		}
+		c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
+		return &types.Error{}
 	case *ast.PathExpr:
 		key, _, typeKey, method := c.resolvePathDetails(fn.Segments)
 		if method != "" {
@@ -881,12 +885,15 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 			c.errorf(fn.Pos, "cannot find function `%s`", strings.Join(fn.Segments, "::"))
 			return &types.Error{}
 		}
-		info, ok := c.fns[key]
-		if !ok {
-			c.errorf(fn.Pos, "cannot find function `%s`", strings.Join(fn.Segments, "::"))
-			return &types.Error{}
+		if info, ok := c.fns[key]; ok {
+			return c.checkFnCall(info, e.Args, nil, env, loans, path)
 		}
-		return c.checkFnCall(info, e.Args, nil, env, loans, path)
+		if _, ok := c.structs[key]; ok {
+			c.exprTypes[e] = &types.Named{Name: fn.Segments[len(fn.Segments)-1]}
+			return c.exprTypes[e]
+		}
+		c.errorf(fn.Pos, "cannot find function `%s`", strings.Join(fn.Segments, "::"))
+		return &types.Error{}
 	case *ast.FieldExpr:
 		return c.checkMethodCall(fn, e.Args, env, loans, path)
 	default:
