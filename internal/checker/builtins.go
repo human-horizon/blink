@@ -110,6 +110,12 @@ func isBuiltinTrait(name string) bool {
 	}
 }
 
+// isBuiltinTypeName reports whether name is a known std-lib/Bevy type stub.
+func isBuiltinTypeName(name string) bool {
+	_, ok := builtinTypes[name]
+	return ok
+}
+
 func init() {
 	i32 := types.I32
 	boolT := types.Bool

@@ -274,6 +274,22 @@ fn main() -> i32 {
 		t.Fatalf("unexpected errors: %s", r.String())
 	}
 }
+func TestBuiltinStructLiteral(t *testing.T) {
+	src := `
+fn main() -> i32 {
+    let loc = EntityLocation { archetype_id: 1, table_id: 2, table_row: 3, archetype_row: 4 };
+    let _id = loc.archetype_id;
+    0
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
 func TestBuiltinEnumVariantPath(t *testing.T) {
 	src := `
 fn main() -> i32 {

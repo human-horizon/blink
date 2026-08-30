@@ -1168,6 +1168,11 @@ func (c *Checker) hasTraitImpl(ty types.Type, trait string) bool {
 func (c *Checker) fieldType(name string, args []types.Type, field string, e ast.Expr) types.Type {
 	st, ok := c.structs[name]
 	if !ok {
+		if isBuiltinTypeName(name) {
+			// Field layout of unparsed std-lib types is unknown; return a
+			// generic placeholder so the field access keeps type-checking.
+			return &types.Generic{Name: "_"}
+		}
 		c.errorf(PosOf(e), "unknown type `%s`", name)
 		return &types.Error{}
 	}
@@ -1213,11 +1218,18 @@ func (c *Checker) checkIndex(e *ast.IndexExpr, env *environment, loans *borrowCt
 func (c *Checker) checkStructLit(e *ast.StructLit, env *environment, loans *borrowCtx, path string) types.Type {
 	key := c.resolveName(e.Name)
 	if !c.canAccess(key) {
+		// Bevy std-lib types are not parsed; accept their struct literals loosely.
+		if isBuiltinTypeName(e.Name) {
+			return &types.Named{Name: e.Name}
+		}
 		c.errorf(e.Pos, "unknown struct `%s`", e.Name)
 		return &types.Error{}
 	}
 	st, ok := c.structs[key]
 	if !ok {
+		if isBuiltinTypeName(e.Name) {
+			return &types.Named{Name: e.Name}
+		}
 		c.errorf(e.Pos, "unknown struct `%s`", e.Name)
 		return &types.Error{}
 	}
@@ -1240,6 +1252,9 @@ func (c *Checker) checkStructLitWithAnnotation(e *ast.StructLit, annot types.Typ
 	}
 	st, ok := c.structs[named.Name]
 	if !ok {
+		if isBuiltinTypeName(named.Name) {
+			return named
+		}
 		c.errorf(e.Pos, "unknown struct `%s`", named.Name)
 		return &types.Error{}
 	}
@@ -1587,6 +1602,17 @@ func (c *Checker) checkStructPattern(pat *ast.PatStruct, ty types.Type, env *env
 	key := c.resolveName(pat.Name)
 	st, ok := c.structs[key]
 	if !ok {
+		if isBuiltinTypeName(pat.Name) {
+			// Bind pattern fields loosely for unparsed standard-lib structs.
+			for _, b := range pat.Fields {
+				v := b.BindName
+				if v == "" {
+					v = b.Field
+				}
+				c.checkPattern(&ast.PatIdent{Pos: b.Pos, Name: v}, &types.Generic{Name: "_"}, env, isMut, path)
+			}
+			return
+		}
 		c.errorf(pat.Pos, "unknown struct `%s`", pat.Name)
 		return
 	}
