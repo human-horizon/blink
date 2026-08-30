@@ -174,6 +174,31 @@ fn main() -> i32 {
 	}
 }
 
+func TestSequentialMutBorrows(t *testing.T) {
+	src := `
+fn main() -> i32 {
+    let mut flags = 0;
+    let mut i = 0;
+    while i < 2 {
+        update(&mut flags);
+        update(&mut flags);
+        i = i + 1;
+    }
+    flags
+}
+
+fn update(f: &mut i32) {
+    *f = *f + 1;
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
 func TestMutableBorrowBlocksShared(t *testing.T) {
 	src := `
 fn main() {

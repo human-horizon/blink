@@ -1519,6 +1519,7 @@ func (c *Checker) checkBlock(block *ast.BlockExpr, env *environment, loans *borr
 	localLoans := newBorrowCtx(loans)
 	for _, s := range block.Stmts {
 		c.checkStmt(s, local, localLoans, ret, path)
+		localLoans.releaseLoans()
 	}
 	if block.Result != nil {
 		if lit, ok := block.Result.(*ast.StructLit); ok {
@@ -1545,6 +1546,7 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 			valTy = c.checkExpr(st.Value, env, loans, path)
 			if loans != nil {
 				c.move(loans, st.Value, valTy)
+				c.reapplyBorrow(loans, env, st.Value, valTy)
 			}
 		}
 		if annot != nil {

@@ -51,6 +51,7 @@ var builtinTypes = map[string]struct{}{
 	"TableRow":           {},
 	"ArchetypeRow":       {},
 	"ArchetypeFlags":     {},
+	"ComponentInfo":      {},
 	"NonMaxU32":          {},
 	"NonMaxU64":          {},
 	"NonMax":             {},
@@ -249,8 +250,9 @@ func init() {
 	}
 	// Bevy-specific methods.
 	components := &types.Named{Name: "Components"}
-	register("Components", "get_info_unchecked", ref(components), []types.Type{nil}, nil)
+	register("Components", "get_info_unchecked", ref(components), []types.Type{nil}, &types.Named{Name: "ComponentInfo"})
 	register("Components", "get", ref(components), []types.Type{nil}, opt)
+	register("ComponentInfo", "update_archetype_flags", ref(&types.Named{Name: "ComponentInfo"}), []types.Type{nil}, unitT)
 	observers := &types.Named{Name: "Observers"}
 	register("Observers", "update_archetype_flags", refMut(observers), []types.Type{nil, nil}, unitT)
 	register("Observers", "default", nil, nil, observers)

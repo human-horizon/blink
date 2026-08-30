@@ -47,6 +47,15 @@ func (b *borrowCtx) getOrCreate(name string) *varState {
 	return s
 }
 
+// releaseLoans clears all active borrows in this scope. It is called after each
+// statement so that a mutable/immutable borrow does not outlive its statement.
+func (b *borrowCtx) releaseLoans() {
+	for _, s := range b.states {
+		s.mutableLoan = false
+		s.sharedLoans = 0
+	}
+}
+
 func (c *Checker) borrowError(pos ast.Pos, format string, args ...interface{}) {
 	c.errorf(pos, format, args...)
 }
@@ -163,4 +172,25 @@ func (c *Checker) move(ctx *borrowCtx, expr ast.Expr, ty types.Type) {
 		return
 	}
 	s.moved = true
+}
+
+// reapplyBorrow re-establishes a borrow that was stored into a let binding.
+// Statement-level loan release clears borrows after each statement; a reference
+// stored in a variable must keep its borrow alive for the variable's lifetime.
+func (c *Checker) reapplyBorrow(ctx *borrowCtx, env *environment, expr ast.Expr, ty types.Type) {
+	u, ok := expr.(*ast.UnaryExpr)
+	if !ok {
+		return
+	}
+	// self is already borrowed by the method receiver; re-borrowing it here
+	// would spuriously flag valid sequential &mut self uses.
+	if rootVar(u.Operand) == "self" {
+		return
+	}
+	switch u.Op {
+	case "&mut":
+		c.borrowMut(ctx, env, u.Operand, ty)
+	case "&":
+		c.borrowShared(ctx, u.Operand, ty)
+	}
 }
