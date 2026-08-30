@@ -173,7 +173,7 @@ func init() {
 	register("Iterator", "filter", ref(iter), []types.Type{nil}, iter)
 	register("Iterator", "collect", ref(iter), nil, nil)
 	register("Iterator", "count", ref(iter), nil, i32)
-	register("Iterator", "enumerate", ref(iter), nil, &types.Tuple{Elems: []types.Type{i32, &types.Generic{Name: "_"}}})
+	register("Iterator", "enumerate", ref(iter), nil, iter)
 	register("Iterator", "size_hint", ref(iter), nil, &types.Tuple{Elems: []types.Type{i32, i32}})
 	register("Iterator", "sum", ref(iter), nil, nil)
 	register("Iterator", "cloned", ref(iter), nil, iter)
@@ -289,7 +289,6 @@ func init() {
 	register("tuple", "1", ref(tupleT), nil, nil)
 	register("array", "len", ref(arrayT), nil, i32)
 	register("array", "is_empty", ref(arrayT), nil, boolT)
-	register("array", "enumerate", ref(arrayT), nil, &types.Tuple{Elems: []types.Type{i32, &types.Generic{Name: "_"}}})
 	register("array", "iter", ref(arrayT), nil, iter)
 }
 

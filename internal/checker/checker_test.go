@@ -311,13 +311,13 @@ fn main() -> i32 {
 func TestForLoopPatternBinding(t *testing.T) {
 	src := `
 fn main() -> i32 {
-    let x = [1, 2, 3];
+    let x = [(1, 2), (3, 4)];
     let mut total = 0;
-    for item in x {
-        total = total + item;
+    for (a, b) in x {
+        total = total + a + b;
     }
-    for (idx, _v) in x.enumerate() {
-        total = total + idx;
+    for (a, b) in x {
+        total = total + a;
     }
     total
 }
