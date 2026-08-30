@@ -262,6 +262,9 @@ func init() {
 	entryT := &types.Named{Name: "Entry"}
 	register("Entry", "or_default", refMut(entryT), nil, nil)
 	register("Entry", "or_insert", refMut(entryT), []types.Type{nil}, nil)
+	register("Entry", "insert", refMut(entryT), []types.Type{nil, nil}, nil)
+	register("ArchetypeRow", "index", ref(&types.Named{Name: "ArchetypeRow"}), nil, i32)
+	register("ArchetypeId", "index", ref(&types.Named{Name: "ArchetypeId"}), nil, i32)
 	vec2 := &types.Named{Name: "Vec"}
 	register("Vec", "get", ref(vec2), []types.Type{i32}, opt)
 	register("Vec", "get_mut", refMut(vec2), []types.Type{i32}, opt)
