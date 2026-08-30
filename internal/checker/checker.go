@@ -662,7 +662,7 @@ func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
 			c.errorf(e.Pos, "method `%s` requires an instance", method)
 			return &types.Error{}
 		}
-		return &types.Named{Name: "fn"}
+		return m.ret
 	}
 	if key != "" && c.canAccess(key) {
 		if _, ok := c.structs[key]; ok {
@@ -706,6 +706,9 @@ func (c *Checker) resolvePathDetails(segments []string) (key string, isType bool
 		typeKey = c.qualifiedName(c.currentIdx, expanded[0])
 		if _, ok := c.structs[typeKey]; ok {
 			return "", false, typeKey, expanded[1]
+		}
+		if isBuiltinTypeName(expanded[0]) {
+			return "", false, expanded[0], expanded[1]
 		}
 	}
 	// Longest module prefix.

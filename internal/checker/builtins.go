@@ -222,6 +222,9 @@ func init() {
 	register("ArchetypeFlags", "all", nil, nil, &types.Named{Name: "ArchetypeFlags"})
 	register("ArchetypeFlags", "contains", ref(&types.Named{Name: "ArchetypeFlags"}), []types.Type{&types.Named{Name: "ArchetypeFlags"}}, boolT)
 	register("ArchetypeFlags", "set", refMut(&types.Named{Name: "ArchetypeFlags"}), []types.Type{&types.Named{Name: "ArchetypeFlags"}, boolT}, unitT)
+	for _, cn := range []string{"ON_ADD_HOOK", "ON_INSERT_HOOK", "ON_DISCARD_HOOK", "ON_REMOVE_HOOK", "ON_DESPAWN_HOOK", "ON_ADD_OBSERVER", "ON_INSERT_OBSERVER", "ON_DISCARD_OBSERVER", "ON_REMOVE_OBSERVER", "ON_DESPAWN_OBSERVER"} {
+		register("ArchetypeFlags", cn, nil, nil, &types.Named{Name: "ArchetypeFlags"})
+	}
 
 	for _, tn := range []string{"ComponentId", "BundleId", "Entity", "EntityLocation", "ArchetypeId", "TableId", "TableRow", "ArchetypeRow", "StorageType", "ComponentStatus"} {
 		register(tn, "new", nil, []types.Type{i32}, &types.Named{Name: tn})

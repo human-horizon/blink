@@ -248,6 +248,28 @@ fn main() -> i32 {
 	}
 }
 
+func TestBuiltinStaticMethodResolution(t *testing.T) {
+	src := `
+struct ArchetypeFlags { value: i32 }
+
+fn main() -> i32 {
+    let mut flags = ArchetypeFlags::empty();
+    let mut set = SparseSet::with_capacity(4);
+    set.insert(1, 2);
+    if flags.contains(ArchetypeFlags::ON_ADD_HOOK) {
+        return 1;
+    }
+    0
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
 func TestMutSelfBorrow(t *testing.T) {
 	src := `
 struct Counter { value: i32 }
