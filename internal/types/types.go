@@ -135,6 +135,9 @@ func (a *Applied) Equals(other Type) bool {
 
 // Substitute replaces Generic types and lifetimes according to mappings.
 func Substitute(t Type, mapping map[string]Type, lifetimeMapping map[string]string) Type {
+	if t == nil {
+		return nil
+	}
 	switch ty := t.(type) {
 	case *Generic:
 		if sub, ok := mapping[ty.Name]; ok {

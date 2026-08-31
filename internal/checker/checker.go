@@ -938,7 +938,12 @@ func (c *Checker) checkFnCall(info *fnInfo, args []ast.Expr, receiver types.Type
 		}
 	}
 	c.checkBounds(info.bounds, mapping, callPos, path)
-	return types.Substitute(info.ret, mapping, lifetimeMapping)
+	ret := types.Substitute(info.ret, mapping, lifetimeMapping)
+	if ret == nil {
+		// Builtin stub without declared return type; provide a placeholder.
+		ret = &types.Generic{Name: "_"}
+	}
+	return ret
 }
 
 func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *environment, loans *borrowCtx, path string) types.Type {
@@ -966,6 +971,10 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 	baseTy := c.deref(recvTy)
 	baseName := c.typeName(baseTy)
 	if baseName == "" {
+		// Defer to a fresh generic placeholder so chained calls don't cascade.
+		if _, ok := recvTy.(*types.Generic); ok {
+			return &types.Generic{Name: "_"}
+		}
 		c.errorf(PosOf(recvExpr), "method calls require a named type (got %s)", typeStr(recvTy))
 		return &types.Error{}
 	}

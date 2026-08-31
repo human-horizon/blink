@@ -274,6 +274,19 @@ fn main() -> i32 {
 	}
 }
 
+func TestBuiltinStubReturnsPlaceholderForNilRet(t *testing.T) {
+	// Builtin stub without declared return must not produce a Go-nil interface.
+	if got := types.Substitute(nil, nil, nil); got != nil {
+		t.Fatalf("Substitute(nil) expected nil, got %v", got)
+	}
+	named := &types.Named{Name: "X"}
+	gen := &types.Generic{Name: "_"}
+	got := types.Substitute(gen, map[string]types.Type{"_": named}, nil)
+	if !got.Equals(named) {
+		t.Fatalf("Substitute _ → X failed: %s", got)
+	}
+}
+
 func TestEqualsAppliedMatchesNamedBase(t *testing.T) {
 	named := &types.Named{Name: "Option"}
 	applied := &types.Applied{Base: &types.Named{Name: "Option"}, Args: []types.Type{&types.Named{Name: "i32"}}}
