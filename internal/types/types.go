@@ -259,7 +259,17 @@ func (n *Named) Equals(other Type) bool {
 		return true
 	}
 	o, ok := other.(*Named)
-	return ok && o.Name == n.Name
+	if ok {
+		return o.Name == n.Name
+	}
+	// Concrete Applied type matches its uninstantiated Named form for
+	// compatibility with std-lib stubs (e.g. Option ↔ Option<Option<X>>).
+	if app, ok := other.(*Applied); ok {
+		if b, ok := app.Base.(*Named); ok && b.Name == n.Name {
+			return true
+		}
+	}
+	return false
 }
 
 // Ref is a reference type.

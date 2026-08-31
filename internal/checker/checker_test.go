@@ -7,6 +7,7 @@ import (
 	"github.com/humanhorizon/blink/internal/diag"
 	"github.com/humanhorizon/blink/internal/lexer"
 	"github.com/humanhorizon/blink/internal/parser"
+	"github.com/humanhorizon/blink/internal/types"
 )
 
 func parse(src string) *ast.File {
@@ -270,6 +271,14 @@ fn main() -> i32 {
 	c := New([]*ast.File{f}, []string{"test.rs"}, r)
 	if !c.Check() {
 		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
+func TestEqualsAppliedMatchesNamedBase(t *testing.T) {
+	named := &types.Named{Name: "Option"}
+	applied := &types.Applied{Base: &types.Named{Name: "Option"}, Args: []types.Type{&types.Named{Name: "i32"}}}
+	if !named.Equals(applied) {
+		t.Fatal("expected Named{Option} to equal Applied{Option,[i32]}")
 	}
 }
 
