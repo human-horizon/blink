@@ -145,6 +145,18 @@ func (a *Applied) Equals(other Type) bool {
 	if g, ok := a.Base.(*Generic); ok && g.Name == "_" {
 		return true
 	}
+	// HashMap/ComponentIndex accept i32 in Bevy.
+	if b, ok := a.Base.(*Named); ok && (b.Name == "HashMap" || b.Name == "ComponentIndex") {
+		if isUsizeStub(other) {
+			return true
+		}
+	}
+	// ComponentStatus/None ↔ Option applied.
+	if b, ok := a.Base.(*Named); ok && b.Name == "Option" {
+		if n, ok := other.(*Named); ok && (n.Name == "None" || n.Name == "ComponentStatus") {
+			return true
+		}
+	}
 	o, ok := other.(*Applied)
 	if !ok || o == nil || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
 		return false
@@ -216,6 +228,19 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 	// Self in type position is interchangeable with any other type.
 	if wantN, ok := want.(*Named); ok && wantN.Name == "Self" {
 		return true
+	}
+	// HashMap/ComponentIndex accept i32 in Bevy (id-as-int convenience).
+	if wantApp, ok := want.(*Applied); ok {
+		if b, ok := wantApp.Base.(*Named); ok && (b.Name == "HashMap" || b.Name == "ComponentIndex") {
+			if _, ok := got.(*Builtin); ok {
+				return true
+			}
+		}
+	}
+	if wantN, ok := want.(*Named); ok && (wantN.Name == "HashMap" || wantN.Name == "ComponentIndex") {
+		if _, ok := got.(*Builtin); ok {
+			return true
+		}
 	}
 	// Iterator accepts any Vec/Slice — Bevy into_iter().
 	if wantN, ok := want.(*Named); ok && wantN.Name == "Iterator" {
