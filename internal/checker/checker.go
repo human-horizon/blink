@@ -1626,7 +1626,6 @@ func (c *Checker) checkTuplePattern(pat *ast.PatTuple, ty types.Type, env *envir
 	t, ok := ty.(*types.Tuple)
 	if !ok {
 		if !isError(ty) {
-			fmt.Fprintf(os.Stderr, "DEBUG tp pos=%d ty=%s\n", pat.Pos, typeStr(ty))
 			c.errorf(pat.Pos, "expected tuple, found `%s`", ty)
 		}
 		return
