@@ -73,7 +73,8 @@ func isOpaqueIntStub(t Type) bool {
 		switch n.Name {
 		case "ArchetypeId", "TableId", "TableRow", "ArchetypeRow",
 			"StorageType", "ComponentStatus", "ComponentId", "BundleId",
-			"Entity", "EntityLocation", "NonMaxU32", "EventKey":
+			"Entity", "EntityLocation", "NonMaxU32", "EventKey",
+			"None":
 			return true
 		}
 	}
