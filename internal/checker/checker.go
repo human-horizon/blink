@@ -830,6 +830,9 @@ func (c *Checker) checkUnary(e *ast.UnaryExpr, env *environment, loans *borrowCt
 	case "*":
 		ref, ok := ty.(*types.Ref)
 		if !ok {
+			if g, gok := ty.(*types.Generic); gok && g.Name == "_" {
+				return &types.Ref{Elem: &types.Generic{Name: "_"}}
+			}
 			if !isError(ty) {
 				c.errorf(PosOf(e.Operand), "expected reference, found `%s`", ty)
 			}
@@ -1168,6 +1171,9 @@ func (c *Checker) checkField(e *ast.FieldExpr, env *environment, loans *borrowCt
 			c.errorf(PosOf(e.Expr), "expected struct, found `%s`", base)
 		}
 		return &types.Error{}
+	case *types.Generic:
+		// Generic placeholder ("_") — accept any field access as wildcard.
+		return &types.Generic{Name: "_"}
 	default:
 		if !isError(base) {
 			c.errorf(PosOf(e.Expr), "expected struct, found `%s`", base)
