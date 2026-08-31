@@ -32,6 +32,16 @@ func (b *Builtin) Equals(other Type) bool {
 	if isUsizeStub(b) && isUsizeStub(other) {
 		return true
 	}
+	// Bevy opaque integer-like newtypes coerce to/from usize stubs.
+	if isUsizeStub(b) && isOpaqueIntStub(other) {
+		return true
+	}
+	if isOpaqueIntStub(b) && isUsizeStub(other) {
+		return true
+	}
+	if isOpaqueIntStub(b) && isOpaqueIntStub(other) {
+		return true
+	}
 	o, ok := other.(*Builtin)
 	return ok && o.Name == b.Name
 }
