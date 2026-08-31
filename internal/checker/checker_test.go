@@ -274,6 +274,24 @@ fn main() -> i32 {
 	}
 }
 
+func TestOpaqueIntStubUnify(t *testing.T) {
+	archetypeId := &types.Named{Name: "ArchetypeId"}
+	storageType := &types.Named{Name: "StorageType"}
+	if !types.Unify(archetypeId, types.I32, nil, nil) {
+		t.Fatal("expected ArchetypeId~i32 unify")
+	}
+	if !types.Unify(types.I32, archetypeId, nil, nil) {
+		t.Fatal("expected i32~ArchetypeId unify")
+	}
+	if !types.Unify(archetypeId, storageType, nil, nil) {
+		t.Fatal("expected ArchetypeId~StorageType unify")
+	}
+	// A real struct must not unify with i32.
+	if types.Unify(&types.Named{Name: "Archetype"}, types.I32, nil, nil) {
+		t.Fatal("Archetype must not coerce to i32")
+	}
+}
+
 func TestGenericPlaceholderEqualsAnything(t *testing.T) {
 	ph := &types.Generic{Name: "_"}
 	if !ph.Equals(&types.Named{Name: "X"}) {

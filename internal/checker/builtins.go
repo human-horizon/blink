@@ -236,6 +236,11 @@ func init() {
 	register("TableId", "empty", nil, nil, &types.Named{Name: "TableId"})
 	register("ArchetypeId", "EMPTY", nil, nil, &types.Named{Name: "ArchetypeId"})
 
+	// Bits-style accessors on opaque integer-like types.
+	register("StorageType", "bits", ref(&types.Named{Name: "StorageType"}), nil, i32)
+	register("StorageType", "EMPTY", nil, nil, &types.Named{Name: "StorageType"})
+	register("ComponentStatus", "EMPTY", nil, nil, &types.Named{Name: "ComponentStatus"})
+
 	for _, tn := range []string{"SparseSet", "ImmutableSparseSet", "SparseArray", "Components", "Observers", "ComponentIndex", "Edges"} {
 		register(tn, "new", nil, nil, &types.Named{Name: tn})
 		register(tn, "default", nil, nil, &types.Named{Name: tn})

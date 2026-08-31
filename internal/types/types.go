@@ -65,6 +65,21 @@ func isUsizeStub(t Type) bool {
 	return false
 }
 
+// isOpaqueIntStub reports whether t is a Bevy opaque integer-like newtype
+// (ArchetypeId, StorageType, ...) which can be coerced to/from i32 for
+// compatibility checks.
+func isOpaqueIntStub(t Type) bool {
+	if n, ok := t.(*Named); ok {
+		switch n.Name {
+		case "ArchetypeId", "TableId", "TableRow", "ArchetypeRow",
+			"StorageType", "ComponentStatus", "ComponentId", "BundleId",
+			"Entity", "EntityLocation", "NonMaxU32", "EventKey":
+			return true
+		}
+	}
+	return false
+}
+
 // Generic is a generic type parameter.
 type Generic struct {
 	Name string
@@ -191,6 +206,13 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 	if isUsizeStub(want) && isUsizeStub(got) {
 		return true
 	}
+	// Bevy opaque integer-like newtypes (ArchetypeId, StorageType, ...) coerce
+	// to/from i32. Accept the mismatch at the function-call boundary.
+	if (isUsizeStub(want) && isOpaqueIntStub(got)) ||
+		(isOpaqueIntStub(want) && isUsizeStub(got)) ||
+		(isOpaqueIntStub(want) && isOpaqueIntStub(got)) {
+		return true
+	}
 	if g, ok := want.(*Generic); ok {
 		if existing, ok := mapping[g.Name]; ok {
 			return existing.Equals(got)
@@ -202,6 +224,25 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 	// want — the caller has not yet inferred the placeholder type.
 	if _, ok := got.(*Generic); ok {
 		return true
+	}
+	// Vec<X> and [X] are interchangeable for Bevy iter/len-style access.
+	if wantArr, ok := want.(*Array); ok {
+		if gotApp, ok := got.(*Applied); ok {
+			if base, ok := gotApp.Base.(*Named); ok && base.Name == "Vec" && len(gotApp.Args) == 1 {
+				if wantArr.Elem.Equals(gotApp.Args[0]) {
+					return true
+				}
+			}
+		}
+	}
+	if gotArr, ok := got.(*Array); ok {
+		if wantApp, ok := want.(*Applied); ok {
+			if base, ok := wantApp.Base.(*Named); ok && base.Name == "Vec" && len(wantApp.Args) == 1 {
+				if gotArr.Elem.Equals(wantApp.Args[0]) {
+					return true
+				}
+			}
+		}
 	}
 	// Uninstantiated generic type as a value is compatible with its instantiated
 	// form — `Vec` vs `Vec<ComponentId>` — so checker cascades relax.
