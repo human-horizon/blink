@@ -432,6 +432,16 @@ func (n *Named) Equals(other Type) bool {
 			return true
 		}
 	}
+	// Bevy accepts i32 literals as opaque newtype values; if the other type
+	// is unknown (e.g. Array with unbound length), accept the wildcard.
+	if isOpaqueIntStub(n) {
+		if _, ok := other.(*Array); ok {
+			return true
+		}
+		if _, ok := other.(*Generic); ok {
+			return true
+		}
+	}
 	// Concrete Applied type matches its uninstantiated Named form for
 	// compatibility with std-lib stubs (e.g. Option ↔ Option<Option<X>>).
 	if app, ok := other.(*Applied); ok {
