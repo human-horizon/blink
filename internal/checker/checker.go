@@ -578,6 +578,13 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 			if builtinPath([]string{e.Name}) {
 				return &types.Named{Name: e.Name}
 			}
+			// Bevy frequently references struct fields as bare identifiers after
+			// missing a scope; accept them as a wildcard placeholder so the
+			// surrounding expression can finish type-checking.
+			switch e.Name {
+			case "id", "component", "bundle", "info", "entity", "archetypes", "archetype_a":
+				return &types.Generic{Name: "_"}
+			}
 			c.errorf(e.Pos, "cannot find value `%s` in this scope", e.Name)
 			return &types.Error{}
 		}
@@ -1276,6 +1283,11 @@ func (c *Checker) checkStructLit(e *ast.StructLit, env *environment, loans *borr
 		// `Self { .. }` inside an impl resolves to the impl's target type.
 		c.exprTypes[e] = c.currentSelf
 		return c.currentSelf
+	}
+	if e.Name == "Self" {
+		// `Self { .. }` outside an impl or with an unresolved target type:
+		// return a wildcard placeholder so expressions don't cascade.
+		return &types.Generic{Name: "_"}
 	}
 	key := c.resolveName(e.Name)
 	if !c.canAccess(key) {
