@@ -90,6 +90,31 @@ type builtinSig struct {
 
 var builtinMethods = map[builtinKey]builtinSig{}
 
+// builtinFields records fields declared on opaque builtin stubs so that
+// access like `archetypes.id` and `component.id` resolve to a concrete type
+// instead of producing `cannot find value` cascades.
+var builtinFields = map[string]map[string]types.Type{}
+
+func builtinField(typeName, field string) types.Type {
+	if _, ok := builtinTypes[typeName]; !ok {
+		return nil
+	}
+	if m, ok := builtinFields[typeName]; ok {
+		return m[field]
+	}
+	return nil
+}
+
+func registerBuiltinField(typeName, field string, ty types.Type) {
+	if _, ok := builtinTypes[typeName]; !ok {
+		return
+	}
+	if builtinFields[typeName] == nil {
+		builtinFields[typeName] = map[string]types.Type{}
+	}
+	builtinFields[typeName][field] = ty
+}
+
 func builtinMethod(typeName, methodName string) *fnInfo {
 	if _, ok := builtinTypes[typeName]; !ok {
 		return nil
@@ -235,6 +260,15 @@ func init() {
 	register("Entity", "new", nil, []types.Type{i32, i32, i32}, &types.Named{Name: "Entity"})
 	register("TableId", "empty", nil, nil, &types.Named{Name: "TableId"})
 	register("ArchetypeId", "EMPTY", nil, nil, &types.Named{Name: "ArchetypeId"})
+
+	// Bevy opaque struct fields.
+	registerBuiltinField("Archetypes", "id", &types.Named{Name: "ArchetypeId"})
+	registerBuiltinField("ComponentInfo", "id", &types.Named{Name: "ComponentId"})
+	registerBuiltinField("ComponentInfo", "component", &types.Generic{Name: "_"})
+	registerBuiltinField("Component", "id", &types.Named{Name: "ComponentId"})
+	registerBuiltinField("Bundle", "id", &types.Named{Name: "BundleId"})
+	registerBuiltinField("Archetype", "id", &types.Named{Name: "ArchetypeId"})
+	registerBuiltinField("Archetype", "components", &types.Generic{Name: "_"})
 
 	// Bits-style accessors on opaque integer-like types.
 	register("StorageType", "bits", ref(&types.Named{Name: "StorageType"}), nil, i32)

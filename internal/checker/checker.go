@@ -1212,6 +1212,9 @@ func (c *Checker) fieldType(name string, args []types.Type, field string, e ast.
 	st, ok := c.structs[name]
 	if !ok {
 		if isBuiltinTypeName(name) {
+			if fty := builtinField(name, field); fty != nil {
+				return fty
+			}
 			// Field layout of unparsed std-lib types is unknown; return a
 			// generic placeholder so the field access keeps type-checking.
 			return &types.Generic{Name: "_"}
@@ -1246,6 +1249,16 @@ func (c *Checker) checkIndex(e *ast.IndexExpr, env *environment, loans *borrowCt
 	base := c.checkExpr(e.Expr, env, loans, path)
 	arr, ok := base.(*types.Array)
 	if !ok {
+		// Bevy often indexes Vec<T> like an array; accept the elem.
+		if ref, rok := c.deref(base).(*types.Applied); rok {
+			if n, nok := ref.Base.(*types.Named); nok && n.Name == "Vec" && len(ref.Args) == 1 {
+				idx := c.checkExpr(e.Index, env, loans, path)
+				if !idx.Equals(types.I32) && !isError(idx) {
+					c.errorf(PosOf(e.Index), "expected `i32`, found `%s`", idx)
+				}
+				return ref.Args[0]
+			}
+		}
 		if !isError(base) {
 			c.errorf(PosOf(e.Expr), "expected array, found `%s`", base)
 		}
