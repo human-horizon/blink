@@ -518,6 +518,15 @@ func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 		if !ok {
 			continue
 		}
+		// Substitute `Self` in the method's return type with the impl's
+		// ForType — proper Rust semantics, not a wildcard.
+		if c.currentSelf != nil {
+			mapping := map[string]types.Type{"Self": c.currentSelf}
+			minfo.ret = types.Substitute(minfo.ret, mapping, nil)
+			for i := range minfo.paramTypes {
+				minfo.paramTypes[i] = types.Substitute(minfo.paramTypes[i], mapping, nil)
+			}
+		}
 		env := newEnv(nil)
 		selfMut := false
 		for _, p := range m.Params {
