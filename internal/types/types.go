@@ -478,7 +478,29 @@ func (r *Ref) Equals(other Type) bool {
 		}
 		return false
 	}
-	return o.IsMut == r.IsMut && o.Lifetime == r.Lifetime && r.Elem.Equals(o.Elem)
+	if o.IsMut != r.IsMut || o.Lifetime != r.Lifetime {
+		return false
+	}
+	if r.Elem.Equals(o.Elem) {
+		return true
+	}
+	// &[X] accepts Box<[X]> (Bevy auto-deref of Box<[T]> to &[T]).
+	if rarr, ok := r.Elem.(*Slice); ok {
+		if gapp, ok := o.Elem.(*Applied); ok {
+			if box, bok := gapp.Base.(*Named); bok && box.Name == "Box" && len(gapp.Args) == 1 {
+				if garr, ok := gapp.Args[0].(*Slice); ok {
+					if rarr.Elem.Equals(garr.Elem) {
+						return true
+					}
+				}
+			}
+		}
+		// &[X] accepts [_] (unbound array literal).
+		if _, ok := o.Elem.(*Array); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Array is a fixed-size array type.
