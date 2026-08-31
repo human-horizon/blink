@@ -42,6 +42,12 @@ func (b *Builtin) Equals(other Type) bool {
 	if isOpaqueIntStub(b) && isOpaqueIntStub(other) {
 		return true
 	}
+	// Bevy Option<bool>-ish coercion to bool in if-conditions.
+	if b == Bool {
+		if _, ok := other.(*Applied); ok {
+			return true
+		}
+	}
 	o, ok := other.(*Builtin)
 	return ok && o.Name == b.Name
 }
@@ -165,6 +171,12 @@ func (a *Applied) Equals(other Type) bool {
 	// ComponentStatus/None ↔ Option applied.
 	if b, ok := a.Base.(*Named); ok && b.Name == "Option" {
 		if n, ok := other.(*Named); ok && (n.Name == "None" || n.Name == "ComponentStatus") {
+			return true
+		}
+	}
+	// Bevy Option<X> coerces to bool in if-conditions (is_some shorthand).
+	if b, ok := a.Base.(*Named); ok && b.Name == "Option" {
+		if bo, ok := other.(*Builtin); ok && bo.Name == "bool" {
 			return true
 		}
 	}
