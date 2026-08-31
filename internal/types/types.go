@@ -123,6 +123,13 @@ func (a *Applied) Equals(other Type) bool {
 	if other == nil {
 		return a == nil
 	}
+	// Generic placeholder ("_") matches any Applied form.
+	if g, ok := other.(*Generic); ok && g.Name == "_" {
+		return true
+	}
+	if g, ok := a.Base.(*Generic); ok && g.Name == "_" {
+		return true
+	}
 	o, ok := other.(*Applied)
 	if !ok || o == nil || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
 		return false
@@ -315,7 +322,14 @@ func (r *Ref) Equals(other Type) bool {
 		return r == nil
 	}
 	o, ok := other.(*Ref)
-	return ok && o.IsMut == r.IsMut && o.Lifetime == r.Lifetime && r.Elem.Equals(o.Elem)
+	if !ok {
+		// Generic placeholder wildcard.
+		if g, ok := other.(*Generic); ok && g.Name == "_" {
+			return true
+		}
+		return false
+	}
+	return o.IsMut == r.IsMut && o.Lifetime == r.Lifetime && r.Elem.Equals(o.Elem)
 }
 
 // Array is a fixed-size array type.
@@ -357,6 +371,9 @@ func (s *Slice) Equals(other Type) bool {
 	}
 	if other == nil {
 		return s == nil
+	}
+	if g, ok := other.(*Generic); ok && g.Name == "_" {
+		return true
 	}
 	o, ok := other.(*Slice)
 	return ok && s.Elem.Equals(o.Elem)
