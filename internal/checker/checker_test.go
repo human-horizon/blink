@@ -273,6 +273,24 @@ fn main() -> i32 {
 	}
 }
 
+func TestUnifyUninstantiatedGenericAsValue(t *testing.T) {
+	src := `
+fn takes_vec(v: Vec<ComponentId>) -> i32 { 0 }
+struct ComponentId { v: i32 }
+
+fn main() -> i32 {
+    let v: Vec = Vec { v: 1 };
+    takes_vec(v)
+}
+`
+	f := parse(src)
+	r := &diag.Reporter{}
+	c := New([]*ast.File{f}, []string{"test.rs"}, r)
+	if !c.Check() {
+		t.Fatalf("unexpected errors: %s", r.String())
+	}
+}
+
 func TestBuiltinStaticMethodResolution(t *testing.T) {
 	src := `
 struct ArchetypeFlags { value: i32 }

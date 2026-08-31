@@ -182,6 +182,15 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 		mapping[g.Name] = got
 		return true
 	}
+	// Uninstantiated generic type as a value is compatible with its instantiated
+	// form — `Vec` vs `Vec<ComponentId>` — so checker cascades relax.
+	if wantApp, ok := want.(*Applied); ok {
+		if gotNamed, ok := got.(*Named); ok {
+			if wantBase, ok := wantApp.Base.(*Named); ok && wantBase.Name == gotNamed.Name {
+				return true
+			}
+		}
+	}
 	if wantRef, ok := want.(*Ref); ok {
 		gotRef, ok := got.(*Ref)
 		if !ok || wantRef.IsMut != gotRef.IsMut {
