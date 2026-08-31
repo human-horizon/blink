@@ -557,7 +557,14 @@ func (s *Slice) Equals(other Type) bool {
 		return true
 	}
 	o, ok := other.(*Slice)
-	return ok && s.Elem.Equals(o.Elem)
+	if ok {
+		return s.Elem.Equals(o.Elem)
+	}
+	// Slice[X] accepts Array[X, _] — Bevy [X; _] literals.
+	if a, ok := other.(*Array); ok {
+		return s.Elem.Equals(a.Elem)
+	}
+	return false
 }
 
 // Tuple is a tuple type.
