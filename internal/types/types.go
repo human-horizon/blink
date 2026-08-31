@@ -357,6 +357,20 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 		}
 		return Unify(wantRef.Elem, gotRef.Elem, mapping, lifetimeMapping)
 	}
+	// Deref coercion in fn-arg Unify: &Vec<T> ≈ &[T] (Rust Deref<Target=[T]>).
+	if wantRef, ok := want.(*Ref); ok {
+		if gotRef, ok := got.(*Ref); ok && wantRef.IsMut == gotRef.IsMut {
+			if wantSl, ok := wantRef.Elem.(*Slice); ok {
+				if gotApp, ok := gotRef.Elem.(*Applied); ok {
+					if b, ok := gotApp.Base.(*Named); ok && b.Name == "Vec" && len(gotApp.Args) == 1 {
+						if wantSl.Elem.Equals(gotApp.Args[0]) {
+							return true
+						}
+					}
+				}
+			}
+		}
+	}
 	if wantApp, ok := want.(*Applied); ok {
 		gotApp, ok := got.(*Applied)
 		if !ok || !wantApp.Base.Equals(gotApp.Base) || len(wantApp.Args) != len(gotApp.Args) {
@@ -502,6 +516,12 @@ func (r *Ref) Equals(other Type) bool {
 					if rarr.Elem.Equals(garr.Elem) {
 						return true
 					}
+				}
+			}
+			// &Vec<T> coerces to &[T] (Rust Deref<Target=[T]> for Vec<T>).
+			if v, vok := gapp.Base.(*Named); vok && v.Name == "Vec" && len(gapp.Args) == 1 {
+				if rarr.Elem.Equals(gapp.Args[0]) {
+					return true
 				}
 			}
 		}
