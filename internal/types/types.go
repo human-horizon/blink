@@ -158,6 +158,12 @@ func (a *Applied) Equals(other Type) bool {
 			return true
 		}
 	}
+	// StorageType/ComponentStatus: usize stubs accepted anywhere in Bevy.
+	if b, ok := a.Base.(*Named); ok && (b.Name == "StorageType" || b.Name == "ComponentStatus") {
+		if isUsizeStub(other) {
+			return true
+		}
+	}
 	o, ok := other.(*Applied)
 	if !ok || o == nil || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
 		return false
@@ -241,6 +247,17 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 	if wantN, ok := want.(*Named); ok && (wantN.Name == "HashMap" || wantN.Name == "ComponentIndex") {
 		if _, ok := got.(*Builtin); ok {
 			return true
+		}
+	}
+	// StorageType/ComponentStatus coerce with i32 in Bevy newtypes.
+	if _, ok := got.(*Builtin); ok {
+		if wantN, ok := want.(*Named); ok && (wantN.Name == "StorageType" || wantN.Name == "ComponentStatus") {
+			return true
+		}
+		if wantApp, ok := want.(*Applied); ok {
+			if b, ok := wantApp.Base.(*Named); ok && (b.Name == "StorageType" || b.Name == "ComponentStatus") {
+				return true
+			}
 		}
 	}
 	// Iterator accepts any Vec/Slice — Bevy into_iter().
@@ -386,6 +403,12 @@ func (n *Named) Equals(other Type) bool {
 	}
 	if isUsizeStub(n) && isOpaqueIntStub(other) {
 		return true
+	}
+	// Named accepts Ref{Generic{"_"}} wildcard — used by cascading checkers.
+	if rr, ok := other.(*Ref); ok {
+		if g, ok := rr.Elem.(*Generic); ok && g.Name == "_" {
+			return true
+		}
 	}
 	// Concrete Applied type matches its uninstantiated Named form for
 	// compatibility with std-lib stubs (e.g. Option ↔ Option<Option<X>>).
