@@ -217,6 +217,18 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 	if wantN, ok := want.(*Named); ok && wantN.Name == "Self" {
 		return true
 	}
+	// Iterator accepts any Vec/Slice — Bevy into_iter().
+	if wantN, ok := want.(*Named); ok && wantN.Name == "Iterator" {
+		if _, ok := got.(*Applied); ok {
+			return true
+		}
+		if _, ok := got.(*Array); ok {
+			return true
+		}
+		if _, ok := got.(*Slice); ok {
+			return true
+		}
+	}
 	if g, ok := want.(*Generic); ok {
 		if existing, ok := mapping[g.Name]; ok {
 			return existing.Equals(got)
@@ -329,6 +341,14 @@ func (n *Named) Equals(other Type) bool {
 		// Bevy uses Self::Foo for associated-type expressions in generic
 		// impls and trait stubs that the checker cannot always resolve.
 		return true
+	}
+	// Bevy: Option variant `None` accepted wherever Option<T> expected.
+	if n.Name == "None" {
+		if app, ok := other.(*Applied); ok {
+			if b, ok := app.Base.(*Named); ok && b.Name == "Option" {
+				return true
+			}
+		}
 	}
 	o, ok := other.(*Named)
 	if ok {
