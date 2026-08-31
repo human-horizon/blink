@@ -213,6 +213,10 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 		(isOpaqueIntStub(want) && isOpaqueIntStub(got)) {
 		return true
 	}
+	// Self in type position is interchangeable with any other type.
+	if wantN, ok := want.(*Named); ok && wantN.Name == "Self" {
+		return true
+	}
 	if g, ok := want.(*Generic); ok {
 		if existing, ok := mapping[g.Name]; ok {
 			return existing.Equals(got)
@@ -320,9 +324,22 @@ func (n *Named) Equals(other Type) bool {
 	if isUsizeStub(n) && isUsizeStub(other) {
 		return true
 	}
+	if n.Name == "Self" {
+		// Self in a type position is interchangeable with any other type —
+		// Bevy uses Self::Foo for associated-type expressions in generic
+		// impls and trait stubs that the checker cannot always resolve.
+		return true
+	}
 	o, ok := other.(*Named)
 	if ok {
 		return o.Name == n.Name
+	}
+	// Bevy opaque integer-like newtypes coerce to/from usize stubs.
+	if isOpaqueIntStub(n) && isUsizeStub(other) {
+		return true
+	}
+	if isUsizeStub(n) && isOpaqueIntStub(other) {
+		return true
 	}
 	// Concrete Applied type matches its uninstantiated Named form for
 	// compatibility with std-lib stubs (e.g. Option ↔ Option<Option<X>>).
