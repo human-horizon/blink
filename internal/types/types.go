@@ -79,6 +79,12 @@ func (g *Generic) Equals(other Type) bool {
 	if other == nil {
 		return g == nil
 	}
+	// Generic placeholder ("_") matches any concrete type — the checker
+	// could not infer the placeholder during slice/box calls and uses it
+	// as a wildcard sink for cascading compatibility checks.
+	if g.Name == "_" {
+		return true
+	}
 	o, ok := other.(*Generic)
 	return ok && o.Name == g.Name
 }
@@ -183,6 +189,11 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 			return existing.Equals(got)
 		}
 		mapping[g.Name] = got
+		return true
+	}
+	// Generic placeholder ("_") as the got value is compatible with any concrete
+	// want — the caller has not yet inferred the placeholder type.
+	if _, ok := got.(*Generic); ok {
 		return true
 	}
 	// Uninstantiated generic type as a value is compatible with its instantiated

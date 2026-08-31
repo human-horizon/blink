@@ -274,6 +274,16 @@ fn main() -> i32 {
 	}
 }
 
+func TestGenericPlaceholderEqualsAnything(t *testing.T) {
+	ph := &types.Generic{Name: "_"}
+	if !ph.Equals(&types.Named{Name: "X"}) {
+		t.Fatal("expected placeholder to equal concrete type")
+	}
+	if !ph.Equals(&types.Applied{Base: &types.Named{Name: "Vec"}, Args: []types.Type{&types.Named{Name: "i32"}}}) {
+		t.Fatal("expected placeholder to equal Applied")
+	}
+}
+
 func TestBuiltinStubReturnsPlaceholderForNilRet(t *testing.T) {
 	// Builtin stub without declared return must not produce a Go-nil interface.
 	if got := types.Substitute(nil, nil, nil); got != nil {
