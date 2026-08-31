@@ -868,6 +868,9 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 			c.exprTypes[e] = i32AnyType()
 			return c.exprTypes[e]
 		}
+		if fn.Name == "Self" && c.currentSelf != nil {
+			return c.currentSelf
+		}
 		key := c.resolveName(fn.Name)
 		if !c.canAccess(key) {
 			c.errorf(fn.Pos, "cannot find function `%s`", fn.Name)
