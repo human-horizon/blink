@@ -29,72 +29,8 @@ func (b *Builtin) Equals(other Type) bool {
 	if other == nil {
 		return b == nil
 	}
-	if isUsizeStub(b) && isUsizeStub(other) {
-		return true
-	}
-	// Bevy opaque integer-like newtypes coerce to/from usize stubs.
-	if isUsizeStub(b) && isOpaqueIntStub(other) {
-		return true
-	}
-	if isOpaqueIntStub(b) && isUsizeStub(other) {
-		return true
-	}
-	if isOpaqueIntStub(b) && isOpaqueIntStub(other) {
-		return true
-	}
-	// Bevy Option<bool>-ish coercion to bool in if-conditions.
-	if b == Bool {
-		if _, ok := other.(*Applied); ok {
-			return true
-		}
-	}
 	o, ok := other.(*Builtin)
 	return ok && o.Name == b.Name
-}
-
-// isUsizeStub reports whether t stands in for the Rust usize type. Bevy uses
-// plain identifiers like `usize` or `u32` where we emit i32 stubs; the
-// unification rules allow either side to bind to i32 while still complaining
-// about real type mismatches.
-func isUsizeStub(t Type) bool {
-	if t == nil {
-		return false
-	}
-	if t == I32 {
-		return true
-	}
-	if t == Unit {
-		return true
-	}
-	if b, ok := t.(*Builtin); ok {
-		switch b.Name {
-		case "usize", "u8", "u16", "u32", "u64", "isize", "i8", "i16", "i64", "f32", "f64":
-			return true
-		}
-	}
-	if n, ok := t.(*Named); ok {
-		switch n.Name {
-		case "usize", "u8", "u16", "u32", "u64", "isize", "i8", "i16", "i64", "f32", "f64":
-			return true
-		}
-	}
-	return false
-}
-
-// isOpaqueIntStub reports whether t is a Bevy opaque integer-like newtype
-// (ArchetypeId, StorageType, ...) which can be coerced to/from i32 for
-// compatibility checks.
-func isOpaqueIntStub(t Type) bool {
-	if n, ok := t.(*Named); ok {
-		switch n.Name {
-		case "ArchetypeId", "TableId", "TableRow", "ArchetypeRow",
-			"StorageType", "ComponentStatus", "ComponentId", "BundleId",
-			"Entity", "EntityLocation", "NonMaxU32", "EventKey",
-			"None":
-			return true
-		}
-	}
-	return false
 }
 
 // Generic is a generic type parameter.
@@ -110,12 +46,6 @@ func (g *Generic) Equals(other Type) bool {
 	}
 	if other == nil {
 		return g == nil
-	}
-	// Generic placeholder ("_") matches any concrete type — the checker
-	// could not infer the placeholder during slice/box calls and uses it
-	// as a wildcard sink for cascading compatibility checks.
-	if g.Name == "_" {
-		return true
 	}
 	o, ok := other.(*Generic)
 	return ok && o.Name == g.Name
@@ -155,37 +85,6 @@ func (a *Applied) Equals(other Type) bool {
 	if other == nil {
 		return a == nil
 	}
-	// Generic placeholder ("_") matches any Applied form.
-	if g, ok := other.(*Generic); ok && g.Name == "_" {
-		return true
-	}
-	if g, ok := a.Base.(*Generic); ok && g.Name == "_" {
-		return true
-	}
-	// HashMap/ComponentIndex accept i32 in Bevy.
-	if b, ok := a.Base.(*Named); ok && (b.Name == "HashMap" || b.Name == "ComponentIndex") {
-		if isUsizeStub(other) {
-			return true
-		}
-	}
-	// ComponentStatus/None ↔ Option applied.
-	if b, ok := a.Base.(*Named); ok && b.Name == "Option" {
-		if n, ok := other.(*Named); ok && (n.Name == "None" || n.Name == "ComponentStatus") {
-			return true
-		}
-	}
-	// Bevy Option<X> coerces to bool in if-conditions (is_some shorthand).
-	if b, ok := a.Base.(*Named); ok && b.Name == "Option" {
-		if bo, ok := other.(*Builtin); ok && bo.Name == "bool" {
-			return true
-		}
-	}
-	// StorageType/ComponentStatus: usize stubs accepted anywhere in Bevy.
-	if b, ok := a.Base.(*Named); ok && (b.Name == "StorageType" || b.Name == "ComponentStatus") {
-		if isUsizeStub(other) {
-			return true
-		}
-	}
 	o, ok := other.(*Applied)
 	if !ok || o == nil || !a.Base.Equals(o.Base) || len(a.Args) != len(o.Args) {
 		return false
@@ -222,7 +121,17 @@ func Substitute(t Type, mapping map[string]Type, lifetimeMapping map[string]stri
 		}
 		return &Ref{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), IsMut: ty.IsMut, Lifetime: lt}
 	case *Array:
-		return &Array{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), Len: ty.Len}
+		res := &Array{Elem: Substitute(ty.Elem, mapping, lifetimeMapping), Len: ty.Len, LenName: ty.LenName}
+		// Substitute a const generic parameter used as the array length.
+		if res.LenName != "" {
+			if sub, ok := mapping[res.LenName]; ok {
+				if ci, ok := sub.(*ConstInt); ok {
+					res.Len = ci.Val
+					res.LenName = ""
+				}
+			}
+		}
+		return res
 	case *Tuple:
 		elems := make([]Type, len(ty.Elems))
 		for i, e := range ty.Elems {
@@ -243,57 +152,6 @@ func Substitute(t Type, mapping map[string]Type, lifetimeMapping map[string]stri
 // Unify tries to find substitutions for params that make want equal to got.
 // lifetimeMapping records lifetime parameter substitutions.
 func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[string]string) bool {
-	// Treat usize/u32/u64 etc. as i32 stubs so Bevy types unify.
-	if isUsizeStub(want) && isUsizeStub(got) {
-		return true
-	}
-	// Bevy opaque integer-like newtypes (ArchetypeId, StorageType, ...) coerce
-	// to/from i32. Accept the mismatch at the function-call boundary.
-	if (isUsizeStub(want) && isOpaqueIntStub(got)) ||
-		(isOpaqueIntStub(want) && isUsizeStub(got)) ||
-		(isOpaqueIntStub(want) && isOpaqueIntStub(got)) {
-		return true
-	}
-	// Self in type position is interchangeable with any other type.
-	if wantN, ok := want.(*Named); ok && wantN.Name == "Self" {
-		return true
-	}
-	// HashMap/ComponentIndex accept i32 in Bevy (id-as-int convenience).
-	if wantApp, ok := want.(*Applied); ok {
-		if b, ok := wantApp.Base.(*Named); ok && (b.Name == "HashMap" || b.Name == "ComponentIndex") {
-			if _, ok := got.(*Builtin); ok {
-				return true
-			}
-		}
-	}
-	if wantN, ok := want.(*Named); ok && (wantN.Name == "HashMap" || wantN.Name == "ComponentIndex") {
-		if _, ok := got.(*Builtin); ok {
-			return true
-		}
-	}
-	// StorageType/ComponentStatus coerce with i32 in Bevy newtypes.
-	if _, ok := got.(*Builtin); ok {
-		if wantN, ok := want.(*Named); ok && (wantN.Name == "StorageType" || wantN.Name == "ComponentStatus") {
-			return true
-		}
-		if wantApp, ok := want.(*Applied); ok {
-			if b, ok := wantApp.Base.(*Named); ok && (b.Name == "StorageType" || b.Name == "ComponentStatus") {
-				return true
-			}
-		}
-	}
-	// Iterator accepts any Vec/Slice — Bevy into_iter().
-	if wantN, ok := want.(*Named); ok && wantN.Name == "Iterator" {
-		if _, ok := got.(*Applied); ok {
-			return true
-		}
-		if _, ok := got.(*Array); ok {
-			return true
-		}
-		if _, ok := got.(*Slice); ok {
-			return true
-		}
-	}
 	if g, ok := want.(*Generic); ok {
 		if existing, ok := mapping[g.Name]; ok {
 			return existing.Equals(got)
@@ -301,38 +159,14 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 		mapping[g.Name] = got
 		return true
 	}
-	// Generic placeholder ("_") as the got value is compatible with any concrete
-	// want — the caller has not yet inferred the placeholder type.
-	if _, ok := got.(*Generic); ok {
+	// A generic variable in the got position is constrained by the concrete
+	// wanted type (bidirectional unification for inference).
+	if g, ok := got.(*Generic); ok {
+		if existing, ok := mapping[g.Name]; ok {
+			return existing.Equals(want)
+		}
+		mapping[g.Name] = want
 		return true
-	}
-	// Vec<X> and [X] are interchangeable for Bevy iter/len-style access.
-	if wantArr, ok := want.(*Array); ok {
-		if gotApp, ok := got.(*Applied); ok {
-			if base, ok := gotApp.Base.(*Named); ok && base.Name == "Vec" && len(gotApp.Args) == 1 {
-				if wantArr.Elem.Equals(gotApp.Args[0]) {
-					return true
-				}
-			}
-		}
-	}
-	if gotArr, ok := got.(*Array); ok {
-		if wantApp, ok := want.(*Applied); ok {
-			if base, ok := wantApp.Base.(*Named); ok && base.Name == "Vec" && len(wantApp.Args) == 1 {
-				if gotArr.Elem.Equals(wantApp.Args[0]) {
-					return true
-				}
-			}
-		}
-	}
-	// Uninstantiated generic type as a value is compatible with its instantiated
-	// form — `Vec` vs `Vec<ComponentId>` — so checker cascades relax.
-	if wantApp, ok := want.(*Applied); ok {
-		if gotNamed, ok := got.(*Named); ok {
-			if wantBase, ok := wantApp.Base.(*Named); ok && wantBase.Name == gotNamed.Name {
-				return true
-			}
-		}
 	}
 	if wantRef, ok := want.(*Ref); ok {
 		gotRef, ok := got.(*Ref)
@@ -355,21 +189,24 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 				return false
 			}
 		}
-		return Unify(wantRef.Elem, gotRef.Elem, mapping, lifetimeMapping)
-	}
-	// Deref coercion in fn-arg Unify: &Vec<T> ≈ &[T] (Rust Deref<Target=[T]>).
-	if wantRef, ok := want.(*Ref); ok {
-		if gotRef, ok := got.(*Ref); ok && wantRef.IsMut == gotRef.IsMut {
-			if wantSl, ok := wantRef.Elem.(*Slice); ok {
-				if gotApp, ok := gotRef.Elem.(*Applied); ok {
-					if b, ok := gotApp.Base.(*Named); ok && b.Name == "Vec" && len(gotApp.Args) == 1 {
+		// Rust deref coercion: &Vec<T> and &Box<[T]> can be used as &[T].
+		if wantSl, ok := wantRef.Elem.(*Slice); ok {
+			if gotApp, ok := gotRef.Elem.(*Applied); ok && len(gotApp.Args) == 1 {
+				if base, ok := gotApp.Base.(*Named); ok {
+					switch base.Name {
+					case "Vec":
 						if wantSl.Elem.Equals(gotApp.Args[0]) {
+							return true
+						}
+					case "Box":
+						if gotSlice, ok := gotApp.Args[0].(*Slice); ok && wantSl.Elem.Equals(gotSlice.Elem) {
 							return true
 						}
 					}
 				}
 			}
 		}
+		return Unify(wantRef.Elem, gotRef.Elem, mapping, lifetimeMapping)
 	}
 	if wantApp, ok := want.(*Applied); ok {
 		gotApp, ok := got.(*Applied)
@@ -398,6 +235,35 @@ func Unify(want Type, got Type, mapping map[string]Type, lifetimeMapping map[str
 	return want.Equals(got)
 }
 
+// TypeConstructor is a generic type constructor like Vec, Option, Result.
+// It is distinct from an instantiation (Applied). A bare constructor without
+// type arguments is only valid in a generic context.
+type TypeConstructor struct {
+	Name   string
+	Params []string
+}
+
+func (tc *TypeConstructor) typeMarker()    {}
+func (tc *TypeConstructor) String() string { return tc.Name }
+func (tc *TypeConstructor) Equals(other Type) bool {
+	if tc == nil {
+		return other == nil
+	}
+	if other == nil {
+		return tc == nil
+	}
+	if o, ok := other.(*TypeConstructor); ok {
+		return o.Name == tc.Name
+	}
+	// A type constructor and a named type with the same name refer to the same
+	// generic type; they unify so stdlib methods (TypeConstructor base) match
+	// checker-resolved types (Named base).
+	if n, ok := other.(*Named); ok {
+		return n.Name == tc.Name
+	}
+	return false
+}
+
 // Named is a user-defined type by name.
 type Named struct {
 	Name string
@@ -412,56 +278,15 @@ func (n *Named) Equals(other Type) bool {
 	if other == nil {
 		return n == nil
 	}
-	if isUsizeStub(n) && isUsizeStub(other) {
-		return true
-	}
-	if n.Name == "Self" {
-		// Self in a type position is interchangeable with any other type —
-		// Bevy uses Self::Foo for associated-type expressions in generic
-		// impls and trait stubs that the checker cannot always resolve.
-		return true
-	}
-	// Bevy: Option variant `None` accepted wherever Option<T> expected.
-	if n.Name == "None" {
-		if app, ok := other.(*Applied); ok {
-			if b, ok := app.Base.(*Named); ok && b.Name == "Option" {
-				return true
-			}
-		}
-	}
 	o, ok := other.(*Named)
 	if ok {
 		return o.Name == n.Name
 	}
-	// Bevy opaque integer-like newtypes coerce to/from usize stubs.
-	if isOpaqueIntStub(n) && isUsizeStub(other) {
-		return true
-	}
-	if isUsizeStub(n) && isOpaqueIntStub(other) {
-		return true
-	}
-	// Named accepts Ref{Generic{"_"}} wildcard — used by cascading checkers.
-	if rr, ok := other.(*Ref); ok {
-		if g, ok := rr.Elem.(*Generic); ok && g.Name == "_" {
-			return true
-		}
-	}
-	// Bevy accepts i32 literals as opaque newtype values; if the other type
-	// is unknown (e.g. Array with unbound length), accept the wildcard.
-	if isOpaqueIntStub(n) {
-		if _, ok := other.(*Array); ok {
-			return true
-		}
-		if _, ok := other.(*Generic); ok {
-			return true
-		}
-	}
-	// Concrete Applied type matches its uninstantiated Named form for
-	// compatibility with std-lib stubs (e.g. Option ↔ Option<Option<X>>).
-	if app, ok := other.(*Applied); ok {
-		if b, ok := app.Base.(*Named); ok && b.Name == n.Name {
-			return true
-		}
+	// A named type and a type constructor with the same name refer to the same
+	// generic type; they unify so checker-resolved types (Named base) match
+	// stdlib methods (TypeConstructor base).
+	if tc, ok := other.(*TypeConstructor); ok {
+		return tc.Name == n.Name
 	}
 	return false
 }
@@ -496,10 +321,6 @@ func (r *Ref) Equals(other Type) bool {
 	}
 	o, ok := other.(*Ref)
 	if !ok {
-		// Generic placeholder wildcard.
-		if g, ok := other.(*Generic); ok && g.Name == "_" {
-			return true
-		}
 		return false
 	}
 	if o.IsMut != r.IsMut || o.Lifetime != r.Lifetime {
@@ -508,7 +329,7 @@ func (r *Ref) Equals(other Type) bool {
 	if r.Elem.Equals(o.Elem) {
 		return true
 	}
-	// &[X] accepts Box<[X]> (Bevy auto-deref of Box<[T]> to &[T]).
+	// &[X] accepts Box<[X]> (auto-deref of Box<[T]> to &[T]).
 	if rarr, ok := r.Elem.(*Slice); ok {
 		if gapp, ok := o.Elem.(*Applied); ok {
 			if box, bok := gapp.Base.(*Named); bok && box.Name == "Box" && len(gapp.Args) == 1 {
@@ -525,9 +346,22 @@ func (r *Ref) Equals(other Type) bool {
 				}
 			}
 		}
-		// &[X] accepts [_] (unbound array literal).
-		if _, ok := o.Elem.(*Array); ok {
-			return true
+	}
+	// The actual expression may be a dereference source while the expected
+	// type is the slice target; Rust coercions are checked in this direction
+	// for return expressions and annotated bindings too.
+	if oarr, ok := o.Elem.(*Slice); ok {
+		if rapp, ok := r.Elem.(*Applied); ok && len(rapp.Args) == 1 {
+			if base, ok := rapp.Base.(*Named); ok {
+				switch base.Name {
+				case "Vec":
+					return oarr.Elem.Equals(rapp.Args[0])
+				case "Box":
+					if source, ok := rapp.Args[0].(*Slice); ok {
+						return oarr.Elem.Equals(source.Elem)
+					}
+				}
+			}
 		}
 	}
 	return false
@@ -535,12 +369,16 @@ func (r *Ref) Equals(other Type) bool {
 
 // Array is a fixed-size array type.
 type Array struct {
-	Elem Type
-	Len  int64
+	Elem    Type
+	Len     int64
+	LenName string // non-empty when the length is a const generic parameter ([T; N])
 }
 
 func (a *Array) typeMarker() {}
 func (a *Array) String() string {
+	if a.LenName != "" {
+		return "[" + a.Elem.String() + "; " + a.LenName + "]"
+	}
 	return "[" + a.Elem.String() + "; " + formatInt(a.Len) + "]"
 }
 func (a *Array) Equals(other Type) bool {
@@ -551,7 +389,18 @@ func (a *Array) Equals(other Type) bool {
 		return a == nil
 	}
 	o, ok := other.(*Array)
-	return ok && o.Len == a.Len && a.Elem.Equals(o.Elem)
+	if !ok || !a.Elem.Equals(o.Elem) {
+		return false
+	}
+	// A const-parameter length unifies only with the same name; a concrete
+	// length unifies only with an equal concrete length.
+	if a.LenName != "" && o.LenName != "" {
+		return a.LenName == o.LenName
+	}
+	if a.LenName != "" || o.LenName != "" {
+		return false
+	}
+	return o.Len == a.Len
 }
 
 // Slice is an unsized slice type [T].
@@ -573,16 +422,9 @@ func (s *Slice) Equals(other Type) bool {
 	if other == nil {
 		return s == nil
 	}
-	if g, ok := other.(*Generic); ok && g.Name == "_" {
-		return true
-	}
 	o, ok := other.(*Slice)
 	if ok {
 		return s.Elem.Equals(o.Elem)
-	}
-	// Slice[X] accepts Array[X, _] — Bevy [X; _] literals.
-	if a, ok := other.(*Array); ok {
-		return s.Elem.Equals(a.Elem)
 	}
 	return false
 }
@@ -667,6 +509,20 @@ func IsCopy(t Type) bool {
 	default:
 		return false
 	}
+}
+
+// ConstInt is an integer literal used as a const generic argument (e.g. the 3
+// in `Arr<3>`). It is not a value type; it only participates in const-generic
+// substitution of array lengths.
+type ConstInt struct {
+	Val int64
+}
+
+func (ConstInt) typeMarker()      {}
+func (c ConstInt) String() string { return formatInt(c.Val) }
+func (c ConstInt) Equals(other Type) bool {
+	o, ok := other.(*ConstInt)
+	return ok && o.Val == c.Val
 }
 
 // Error is a sentinel type used when an expression has an error type.

@@ -54,7 +54,7 @@ func TestLoadModulesCargoLayout(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			files, paths, _, err := loadModules(dir)
+			files, paths, _, _, err := loadModules(dir)
 			if err != nil {
 				t.Fatalf("loadModules failed: %v", err)
 			}
@@ -224,6 +224,32 @@ func TestCheckInvalidPhase11(t *testing.T) {
 
 func TestBuildRunExit42(t *testing.T) {
 	binary, err := buildPath("../../testdata/run/valid/exit42")
+	if err != nil {
+		t.Fatalf("expected build success, got: %v", err)
+	}
+	cmd := exec.Command(binary)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected exit code 42")
+	} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 42 {
+		t.Fatalf("expected exit code 42, got: %v", err)
+	}
+}
+
+func TestBuildRunMatchExit42(t *testing.T) {
+	binary, err := buildPath("../../testdata/run/valid/match42")
+	if err != nil {
+		t.Fatalf("expected build success, got: %v", err)
+	}
+	cmd := exec.Command(binary)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected exit code 42")
+	} else if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 42 {
+		t.Fatalf("expected exit code 42, got: %v", err)
+	}
+}
+
+func TestBuildRunAdtExit42(t *testing.T) {
+	binary, err := buildPath("../../testdata/run/valid/adt42")
 	if err != nil {
 		t.Fatalf("expected build success, got: %v", err)
 	}

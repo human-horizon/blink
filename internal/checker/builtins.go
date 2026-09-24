@@ -7,74 +7,41 @@ import "github.com/humanhorizon/blink/internal/types"
 // for the corresponding Bevy/std-lib-style APIs without requiring real
 // declarations.
 var builtinTypes = map[string]struct{}{
-	"Vec":                {},
-	"Box":                {},
-	"Option":             {},
-	"Result":             {},
-	"String":             {},
-	"HashMap":            {},
-	"BTreeMap":           {},
-	"HashSet":            {},
-	"BTreeSet":           {},
-	"VecDeque":           {},
-	"Iterator":           {},
-	"ExactSizeIterator":  {},
-	"Send":               {},
-	"Sync":               {},
-	"Unpin":              {},
-	"RangeFrom":          {},
-	"RangeTo":            {},
-	"Range":              {},
-	"RangeFull":          {},
-	"RangeInclusive":     {},
-	"slice":              {},
-	"tuple":              {},
-	"array":              {},
-	"i32":                {},
-	"i64":                {},
-	"i8":                 {},
-	"u32":                {},
-	"u64":                {},
-	"usize":              {},
-	"f32":                {},
-	"f64":                {},
-	"bool":               {},
-	"Into":               {},
-	"Index":              {},
-	"IndexMut":           {},
-	"ComponentId":        {},
-	"BundleId":           {},
-	"Entity":             {},
-	"EntityLocation":     {},
-	"ArchetypeId":        {},
-	"TableId":            {},
-	"TableRow":           {},
-	"ArchetypeRow":       {},
-	"ArchetypeFlags":     {},
-	"ComponentInfo":      {},
-	"NonMaxU32":          {},
-	"NonMaxU64":          {},
-	"NonMax":             {},
-	"SparseSet":          {},
-	"ImmutableSparseSet": {},
-	"ComponentIndex":     {},
-	"Edges":              {},
-	"Entry":              {},
-	"Archetype":          {},
-	"Archetypes":         {},
-	"Bundle":             {},
-	"Component":          {},
-	"Components":         {},
-	"Observer":           {},
-	"Observers":          {},
-	"SparseArray":        {},
-	"Event":              {},
-	"EventKey":           {},
-	"StorageType":        {},
-	"ComponentStatus":    {},
-	"World":              {},
-	"Query":              {},
-	"QueryState":         {},
+	"Vec":               {},
+	"Box":               {},
+	"Option":            {},
+	"Result":            {},
+	"String":            {},
+	"HashMap":           {},
+	"BTreeMap":          {},
+	"HashSet":           {},
+	"BTreeSet":          {},
+	"VecDeque":          {},
+	"Iterator":          {},
+	"ExactSizeIterator": {},
+	"Send":              {},
+	"Sync":              {},
+	"Unpin":             {},
+	"RangeFrom":         {},
+	"RangeTo":           {},
+	"Range":             {},
+	"RangeFull":         {},
+	"RangeInclusive":    {},
+	"slice":             {},
+	"tuple":             {},
+	"array":             {},
+	"i32":               {},
+	"i64":               {},
+	"i8":                {},
+	"u32":               {},
+	"u64":               {},
+	"usize":             {},
+	"f32":               {},
+	"f64":               {},
+	"bool":              {},
+	"Into":              {},
+	"Index":             {},
+	"IndexMut":          {},
 }
 
 type builtinKey struct {
@@ -239,105 +206,6 @@ func init() {
 	register("HashMap", "iter", ref(hmap), nil, iter)
 
 	register("RangeFrom", "start", ref(&types.Named{Name: "RangeFrom"}), nil, nil)
-
-	register("NonMaxU32", "new", nil, []types.Type{i32}, opt)
-	register("NonMaxU32", "get", ref(&types.Named{Name: "NonMaxU32"}), nil, i32)
-	register("NonMaxU32", "new_unchecked", nil, []types.Type{i32}, &types.Named{Name: "NonMaxU32"})
-
-	register("ArchetypeFlags", "empty", nil, nil, &types.Named{Name: "ArchetypeFlags"})
-	register("ArchetypeFlags", "all", nil, nil, &types.Named{Name: "ArchetypeFlags"})
-	register("ArchetypeFlags", "contains", ref(&types.Named{Name: "ArchetypeFlags"}), []types.Type{&types.Named{Name: "ArchetypeFlags"}}, boolT)
-	register("ArchetypeFlags", "set", refMut(&types.Named{Name: "ArchetypeFlags"}), []types.Type{&types.Named{Name: "ArchetypeFlags"}, boolT}, unitT)
-	for _, cn := range []string{"ON_ADD_HOOK", "ON_INSERT_HOOK", "ON_DISCARD_HOOK", "ON_REMOVE_HOOK", "ON_DESPAWN_HOOK", "ON_ADD_OBSERVER", "ON_INSERT_OBSERVER", "ON_DISCARD_OBSERVER", "ON_REMOVE_OBSERVER", "ON_DESPAWN_OBSERVER"} {
-		register("ArchetypeFlags", cn, nil, nil, &types.Named{Name: "ArchetypeFlags"})
-	}
-
-	for _, tn := range []string{"ComponentId", "BundleId", "Entity", "EntityLocation", "ArchetypeId", "TableId", "TableRow", "ArchetypeRow", "StorageType", "ComponentStatus"} {
-		register(tn, "new", nil, []types.Type{i32}, &types.Named{Name: tn})
-		register(tn, "empty", nil, nil, &types.Named{Name: tn})
-		register(tn, "index", ref(&types.Named{Name: tn}), nil, i32)
-	}
-	register("Entity", "new", nil, []types.Type{i32, i32, i32}, &types.Named{Name: "Entity"})
-	register("TableId", "empty", nil, nil, &types.Named{Name: "TableId"})
-	register("ArchetypeId", "EMPTY", nil, nil, &types.Named{Name: "ArchetypeId"})
-
-	// Bevy opaque struct fields.
-	registerBuiltinField("Archetypes", "id", &types.Named{Name: "ArchetypeId"})
-	registerBuiltinField("ComponentInfo", "id", &types.Named{Name: "ComponentId"})
-	registerBuiltinField("ComponentInfo", "component", &types.Generic{Name: "_"})
-	registerBuiltinField("Component", "id", &types.Named{Name: "ComponentId"})
-	registerBuiltinField("Bundle", "id", &types.Named{Name: "BundleId"})
-	registerBuiltinField("Archetype", "id", &types.Named{Name: "ArchetypeId"})
-	registerBuiltinField("Archetype", "components", &types.Generic{Name: "_"})
-
-	// Bits-style accessors on opaque integer-like types.
-	register("StorageType", "bits", ref(&types.Named{Name: "StorageType"}), nil, i32)
-	register("StorageType", "EMPTY", nil, nil, &types.Named{Name: "StorageType"})
-	register("ComponentStatus", "EMPTY", nil, nil, &types.Named{Name: "ComponentStatus"})
-
-	for _, tn := range []string{"SparseSet", "ImmutableSparseSet", "SparseArray", "Components", "Observers", "ComponentIndex", "Edges"} {
-		register(tn, "new", nil, nil, &types.Named{Name: tn})
-		register(tn, "default", nil, nil, &types.Named{Name: tn})
-		register(tn, "with_capacity", nil, []types.Type{i32}, &types.Named{Name: tn})
-		register(tn, "len", ref(&types.Named{Name: tn}), nil, i32)
-		register(tn, "is_empty", ref(&types.Named{Name: tn}), nil, boolT)
-		register(tn, "get", ref(&types.Named{Name: tn}), []types.Type{nil}, opt)
-		register(tn, "insert", refMut(&types.Named{Name: tn}), []types.Type{nil, nil}, unitT)
-		register(tn, "contains", ref(&types.Named{Name: tn}), []types.Type{nil}, boolT)
-		register(tn, "indices", ref(&types.Named{Name: tn}), nil, &types.Slice{Elem: nil})
-		register(tn, "iter", ref(&types.Named{Name: tn}), nil, iter)
-	}
-	// Bevy-specific methods.
-	components := &types.Named{Name: "Components"}
-	register("Components", "get_info_unchecked", ref(components), []types.Type{nil}, &types.Named{Name: "ComponentInfo"})
-	register("Components", "get", ref(components), []types.Type{nil}, opt)
-	register("ComponentInfo", "update_archetype_flags", ref(&types.Named{Name: "ComponentInfo"}), []types.Type{nil}, unitT)
-	observers := &types.Named{Name: "Observers"}
-	register("Observers", "update_archetype_flags", refMut(observers), []types.Type{nil, nil}, unitT)
-	register("Observers", "default", nil, nil, observers)
-	ci := &types.Named{Name: "ComponentIndex"}
-	register("ComponentIndex", "entry", refMut(ci), []types.Type{nil}, &types.Named{Name: "Entry"})
-	register("ComponentIndex", "or_default", refMut(ci), []types.Type{nil}, nil)
-	register("ComponentIndex", "get", ref(ci), []types.Type{nil}, opt)
-	register("ComponentIndex", "get_mut", refMut(ci), []types.Type{nil}, opt)
-	register("ComponentIndex", "contains_key", ref(ci), []types.Type{nil}, boolT)
-	register("ComponentIndex", "insert", refMut(ci), []types.Type{nil, nil}, opt)
-	// HashMap entry API.
-	entryT := &types.Named{Name: "Entry"}
-	register("Entry", "or_default", refMut(entryT), nil, nil)
-	register("Entry", "or_insert", refMut(entryT), []types.Type{nil}, nil)
-	register("Entry", "insert", refMut(entryT), []types.Type{nil, nil}, nil)
-	register("ArchetypeRow", "index", ref(&types.Named{Name: "ArchetypeRow"}), nil, i32)
-	register("ArchetypeId", "index", ref(&types.Named{Name: "ArchetypeId"}), nil, i32)
-	vec2 := &types.Named{Name: "Vec"}
-	register("Vec", "get", ref(vec2), []types.Type{i32}, opt)
-	register("Vec", "get_mut", refMut(vec2), []types.Type{i32}, opt)
-	register("Vec", "get_unchecked_mut", refMut(vec2), []types.Type{i32}, nil)
-	register("Vec", "get_unchecked", ref(vec2), []types.Type{i32}, nil)
-	register("Vec", "get_disjoint_unchecked_mut", refMut(vec2), []types.Type{nil}, nil)
-	register("Vec", "swap_remove", refMut(vec2), []types.Type{i32}, nil)
-	register("Vec", "first", ref(vec2), nil, opt)
-	register("Vec", "last", ref(vec2), nil, opt)
-	boxT := &types.Named{Name: "Box"}
-	register("Box", "get", ref(boxT), []types.Type{nil}, nil)
-	register("Box", "get_unchecked", ref(boxT), []types.Type{nil}, nil)
-	register("Box", "downcast", refMut(boxT), []types.Type{nil}, nil)
-	optT := &types.Named{Name: "Option"}
-	register("Option", "cloned", ref(optT), nil, optT)
-	register("Option", "copied", ref(optT), nil, optT)
-	register("Option", "transpose", ref(optT), nil, &types.Named{Name: "Result"})
-
-	// Standard conversion trait stubs for source trees without libstd.
-	intoT := &types.Named{Name: "Into"}
-	register("Into", "into", ref(intoT), nil, &types.Error{})
-	register("From", "from", nil, []types.Type{nil}, &types.Error{})
-
-	// ArchetypeGeneration static method.
-	archGen := &types.Named{Name: "ArchetypeGeneration"}
-	register("ArchetypeGeneration", "initial", nil, nil, archGen)
-
-	// IntoIterator trait stub disabled.
-	// register("IntoIterator", "into_iter", ref(nil), nil, iter)
 
 	// Slice, tuple, array synthetic names produced by typeName().
 	sliceT := &types.Named{Name: "slice"}

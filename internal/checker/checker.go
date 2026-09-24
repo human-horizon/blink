@@ -5,6 +5,7 @@ import (
 	"os"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -15,25 +16,32 @@ import (
 
 // Checker performs type checking across files.
 type Checker struct {
-	Files       []*ast.File
-	Paths       []string
-	ModulePaths [][]string
-	Reporter    *diag.Reporter
-	currentIdx  int
-	currentPath string
-	currentSelf types.Type
-	fns         map[string]*fnInfo
-	structs     map[string]*structInfo
-	enums       map[string]*enumInfo
-	traits      map[string]*traitInfo
-	inherent    map[string]map[string]*fnInfo
-	traitImpls  map[string]map[string]*implInfo
-	imports     []map[string]string
-	itemFile    map[string]int
-	consts      map[string]*constInfo
-	globals     map[string]*globalInfo
-	macros      map[string]*ast.MacroRulesDecl
-	exprTypes   map[ast.Expr]types.Type
+	Files              []*ast.File
+	Paths              []string
+	ModulePaths        [][]string
+	Reporter           *diag.Reporter
+	currentIdx         int
+	currentPath        string
+	currentSelf        types.Type
+	currentReturn      types.Type
+	fns                map[string]*fnInfo
+	structs            map[string]*structInfo
+	enums              map[string]*enumInfo
+	traits             map[string]*traitInfo
+	inherent           map[string]map[string]*fnInfo
+	traitImpls         map[string]map[string]*implInfo
+	imports            []map[string]string
+	itemFile           map[string]int
+	consts             map[string]*constInfo
+	globals            map[string]*globalInfo
+	macros             map[string]*ast.MacroRulesDecl
+	aliases            map[string]*aliasInfo
+	exprTypes          map[ast.Expr]types.Type
+	aliasCycleReported bool
+	// sources holds file contents aligned with Files/Paths (optional; set via
+	// SetSources) so errorf can map byte offsets to line:col spans.
+	sources   [][]byte
+	lineCache map[int][]int
 }
 
 type constInfo struct {
@@ -46,6 +54,13 @@ type globalInfo struct {
 	ty   types.Type
 }
 
+type aliasInfo struct {
+	decl      *ast.TypeAliasDecl
+	fileIdx   int
+	base      types.Type
+	resolving bool
+}
+
 type fnInfo struct {
 	decl           *ast.FnDecl
 	lifetimeParams []string
@@ -54,6 +69,7 @@ type fnInfo struct {
 	paramTypes     []types.Type
 	ret            types.Type
 	selfType       types.Type
+	stdlib         bool
 }
 
 type structInfo struct {
@@ -67,19 +83,26 @@ type structInfo struct {
 type enumInfo struct {
 	decl      *ast.EnumDecl
 	genParams []string
+	// fields caches resolved payload types per variant (tuple variants).
+	fields map[string][]types.Type
 }
 
 type traitInfo struct {
-	decl    *ast.TraitDecl
-	methods map[string]*fnInfo
+	decl        *ast.TraitDecl
+	methods     map[string]*fnInfo
+	assocTypes  map[string]types.Type // name -> default type (nil if none)
+	supertraits []string
+	assocConsts map[string]*ast.AssocConstDecl
 }
 
 type implInfo struct {
-	decl    *ast.ImplDecl
-	trait   string
-	forType types.Type
-	bounds  []ast.Constraint
-	methods map[string]*fnInfo
+	decl        *ast.ImplDecl
+	trait       string
+	forType     types.Type
+	bounds      []ast.Constraint
+	methods     map[string]*fnInfo
+	assocTypes  map[string]types.Type // name -> concrete type
+	assocConsts map[string]types.Type // name -> concrete value type
 }
 
 // New creates a checker for the given parsed files and their paths.
@@ -108,6 +131,7 @@ func New(files []*ast.File, paths []string, r *diag.Reporter, modulePaths ...[][
 		consts:      make(map[string]*constInfo),
 		globals:     make(map[string]*globalInfo),
 		macros:      make(map[string]*ast.MacroRulesDecl),
+		aliases:     make(map[string]*aliasInfo),
 		exprTypes:   make(map[ast.Expr]types.Type),
 	}
 }
@@ -208,22 +232,67 @@ func (c *Checker) collect() {
 					c.macros[key] = decl
 					c.itemFile[key] = i
 				}
+			case *ast.TypeAliasDecl:
+				key := c.qualifiedName(i, decl.Name)
+				if _, ok := c.aliases[key]; ok {
+					c.errorf(decl.Pos, "duplicate type alias `%s`", decl.Name)
+				} else {
+					c.aliases[key] = &aliasInfo{decl: decl, fileIdx: i}
+					c.itemFile[key] = i
+				}
 			case *ast.UseDecl:
 				c.collectUse(i, decl)
 			}
 		}
 	}
 	// Second pass: resolve free function, struct, and trait method types.
-	for _, info := range c.fns {
+	for i, f := range c.Files {
+		c.currentIdx = i
+		c.currentPath = c.Paths[i]
+		for _, d := range f.Decls {
+			if alias, ok := d.(*ast.TypeAliasDecl); ok {
+				key := c.qualifiedName(i, alias.Name)
+				if info := c.aliases[key]; info != nil {
+					_ = c.resolveAliasBase(key, info)
+				}
+			}
+		}
+	}
+	for key, info := range c.fns {
+		if idx, ok := c.itemFile[key]; ok {
+			c.currentIdx = idx
+			c.currentPath = c.Paths[idx]
+		}
 		c.fillFnInfo(info, c.currentPath)
 	}
-	for _, info := range c.structs {
+	for key, info := range c.structs {
+		if idx, ok := c.itemFile[key]; ok {
+			c.currentIdx = idx
+			c.currentPath = c.Paths[idx]
+		}
 		info.fields = make(map[string]types.Type)
 		for _, f := range info.decl.Fields {
 			info.fields[f.Name] = c.resolveType(f.Ty, c.currentPath, info.decl.GenParams)
 		}
 	}
-	for _, info := range c.traits {
+	for key, info := range c.traits {
+		if idx, ok := c.itemFile[key]; ok {
+			c.currentIdx = idx
+			c.currentPath = c.Paths[idx]
+		}
+		info.assocTypes = make(map[string]types.Type)
+		for _, at := range info.decl.AssocTypes {
+			if at.Ty != nil {
+				info.assocTypes[at.Name] = c.resolveType(at.Ty, c.currentPath, info.decl.GenParams)
+			} else {
+				info.assocTypes[at.Name] = nil
+			}
+		}
+		info.supertraits = info.decl.Supertraits
+		info.assocConsts = make(map[string]*ast.AssocConstDecl)
+		for _, ac := range info.decl.AssocConsts {
+			info.assocConsts[ac.Name] = ac
+		}
 		for _, m := range info.decl.Methods {
 			minfo := &fnInfo{decl: m, lifetimeParams: m.LifetimeParams, genParams: m.GenParams, bounds: m.Bounds}
 			selfTy := &types.Ref{Elem: &types.Generic{Name: "Self"}, IsMut: false}
@@ -363,34 +432,142 @@ func (c *Checker) collectImpl(impl *ast.ImplDecl) {
 			}
 			c.inherent[typeName][name] = minfo
 		}
-	} else {
-		tr, ok := c.traits[impl.Trait]
-		if !ok && !isBuiltinTrait(impl.Trait) {
-			c.errorf(impl.Pos, "unknown trait `%s`", impl.Trait)
-			return
+		return
+	}
+	tr, ok := c.traits[impl.Trait]
+	if !ok && !isBuiltinTrait(impl.Trait) {
+		c.errorf(impl.Pos, "unknown trait `%s`", impl.Trait)
+		return
+	}
+	// Resolve the impl's associated types and validate them against the trait.
+	assocTypes := make(map[string]types.Type)
+	for _, at := range impl.AssocTypes {
+		if at.Ty == nil {
+			c.errorf(at.Pos, "associated type `%s` in impl must have a concrete type", at.Name)
+			continue
 		}
-		if ok {
-			for name, expected := range tr.methods {
-				provided, exists := methods[name]
-				if !exists {
-					c.errorf(impl.Pos, "missing method `%s` for trait `%s`", name, impl.Trait)
-					continue
-				}
-				expectedSub := c.substSelf(expected, forType)
-				if !c.fnSigMatches(expectedSub, provided) {
-					c.errorf(provided.decl.Pos, "method `%s` has incompatible signature with trait `%s`", name, impl.Trait)
-				}
+		assocTypes[at.Name] = c.resolveType(at.Ty, c.currentPath, impl.GenParams)
+	}
+	// Resolve the impl's associated consts and validate them against the trait.
+	assocConsts := make(map[string]types.Type)
+	for _, ac := range impl.AssocConsts {
+		assocConsts[ac.Name] = c.resolveType(ac.Ty, c.currentPath, impl.GenParams)
+	}
+	if ok {
+		// A type implementing a trait must also implement all of its
+		// supertraits.
+		for _, sup := range tr.supertraits {
+			if !c.hasTraitImpl(forType, sup) {
+				c.errorf(impl.Pos, "the type `%s` does not implement supertrait `%s` of trait `%s`", typeName, sup, impl.Trait)
 			}
-			for name := range methods {
-				if _, exists := tr.methods[name]; !exists {
-					c.errorf(methods[name].decl.Pos, "method `%s` is not part of trait `%s`", name, impl.Trait)
+		}
+		for name, def := range tr.assocTypes {
+			if _, exists := assocTypes[name]; !exists {
+				if def == nil {
+					c.errorf(impl.Pos, "missing associated type `%s` for trait `%s`", name, impl.Trait)
 				}
+				continue
+			}
+			if def != nil && !assocTypes[name].Equals(def) {
+				c.errorf(impl.Pos, "associated type `%s` does not match trait default `%s`", name, typeStr(def))
 			}
 		}
-		if _, exists := c.traitImpls[impl.Trait]; !exists {
-			c.traitImpls[impl.Trait] = make(map[string]*implInfo)
+		for name := range assocTypes {
+			if _, exists := tr.assocTypes[name]; !exists {
+				c.errorf(impl.Pos, "associated type `%s` is not part of trait `%s`", name, impl.Trait)
+			}
 		}
-		c.traitImpls[impl.Trait][typeName] = &implInfo{decl: impl, trait: impl.Trait, forType: forType, bounds: impl.Bounds, methods: methods}
+		// Validate associated constants: each trait const must be provided by
+		// the impl, and its type must match.
+		for name, sig := range tr.assocConsts {
+			provided, exists := assocConsts[name]
+			if !exists {
+				c.errorf(impl.Pos, "missing associated const `%s` for trait `%s`", name, impl.Trait)
+				continue
+			}
+			expectedTy := c.resolveType(sig.Ty, c.currentPath, tr.decl.GenParams)
+			if !provided.Equals(expectedTy) {
+				c.errorf(impl.Pos, "associated const `%s` has type `%s`, expected `%s`", name, typeStr(provided), typeStr(expectedTy))
+			}
+		}
+		for name := range assocConsts {
+			if _, exists := tr.assocConsts[name]; !exists {
+				c.errorf(impl.Pos, "associated const `%s` is not part of trait `%s`", name, impl.Trait)
+			}
+		}
+		for name, expected := range tr.methods {
+			provided, exists := methods[name]
+			if !exists {
+				c.errorf(impl.Pos, "missing method `%s` for trait `%s`", name, impl.Trait)
+				continue
+			}
+			expectedSub := c.substSelf(expected, forType)
+			expectedSub = c.substituteAssocFn(expectedSub, assocTypes)
+			if !c.fnSigMatches(expectedSub, provided) {
+				c.errorf(provided.decl.Pos, "method `%s` has incompatible signature with trait `%s`", name, impl.Trait)
+			}
+		}
+		for name := range methods {
+			if _, exists := tr.methods[name]; !exists {
+				c.errorf(methods[name].decl.Pos, "method `%s` is not part of trait `%s`", name, impl.Trait)
+			}
+		}
+	}
+	if _, exists := c.traitImpls[impl.Trait]; !exists {
+		c.traitImpls[impl.Trait] = make(map[string]*implInfo)
+	}
+	if _, exists := c.traitImpls[impl.Trait][typeName]; exists {
+		c.errorf(impl.Pos, "conflicting implementations of trait `%s` for type `%s`", impl.Trait, typeName)
+		return
+	}
+	c.traitImpls[impl.Trait][typeName] = &implInfo{decl: impl, trait: impl.Trait, forType: forType, bounds: impl.Bounds, methods: methods, assocTypes: assocTypes, assocConsts: assocConsts}
+}
+
+// substituteAssocFn applies substituteAssoc to every type in a fnInfo.
+func (c *Checker) substituteAssocFn(info *fnInfo, assoc map[string]types.Type) *fnInfo {
+	copy := &fnInfo{decl: info.decl, genParams: info.genParams, bounds: info.bounds, selfType: info.selfType}
+	for _, p := range info.paramTypes {
+		copy.paramTypes = append(copy.paramTypes, c.substituteAssoc(p, assoc))
+	}
+	copy.ret = c.substituteAssoc(info.ret, assoc)
+	return copy
+}
+
+// substituteAssoc replaces `Self::<Name>` references in a type with the
+// concrete associated type from the impl's assocTypes map.
+func (c *Checker) substituteAssoc(t types.Type, assoc map[string]types.Type) types.Type {
+	if t == nil || len(assoc) == 0 {
+		return t
+	}
+	switch ty := t.(type) {
+	case *types.Named:
+		if strings.HasPrefix(ty.Name, "Self::") {
+			name := ty.Name[len("Self::"):]
+			if sub, ok := assoc[name]; ok {
+				return sub
+			}
+		}
+		return ty
+	case *types.Applied:
+		args := make([]types.Type, len(ty.Args))
+		for i, a := range ty.Args {
+			args[i] = c.substituteAssoc(a, assoc)
+		}
+		return &types.Applied{Base: ty.Base, Args: args}
+	case *types.Ref:
+		return &types.Ref{Elem: c.substituteAssoc(ty.Elem, assoc), IsMut: ty.IsMut, Lifetime: ty.Lifetime}
+	case *types.Tuple:
+		elems := make([]types.Type, len(ty.Elems))
+		for i, e := range ty.Elems {
+			elems[i] = c.substituteAssoc(e, assoc)
+		}
+		return &types.Tuple{Elems: elems}
+	case *types.Array:
+		return &types.Array{Elem: c.substituteAssoc(ty.Elem, assoc), Len: ty.Len, LenName: ty.LenName}
+	case *types.Slice:
+		return &types.Slice{Elem: c.substituteAssoc(ty.Elem, assoc)}
+	default:
+		return t
 	}
 }
 
@@ -481,7 +658,10 @@ func (c *Checker) checkFn(fn *ast.FnDecl, path string, idx int) {
 		env.set(p.Name, info.paramTypes[i], true)
 	}
 	loans := newBorrowCtx(nil)
+	previousReturn := c.currentReturn
+	c.currentReturn = info.ret
 	bodyTy := c.checkBlock(fn.Body, env, loans, info.ret, path)
+	c.currentReturn = previousReturn
 	if !bodyTy.Equals(info.ret) && !isError(bodyTy) {
 		c.errorf(PosOf(fn.Body), "expected `%s`, found `%s`", typeStr(info.ret), typeStr(bodyTy))
 	}
@@ -542,7 +722,10 @@ func (c *Checker) checkImpl(impl *ast.ImplDecl, path string, idx int) {
 			}
 		}
 		loans := newBorrowCtx(nil)
+		previousReturn := c.currentReturn
+		c.currentReturn = minfo.ret
 		bodyTy := c.checkBlock(m.Body, env, loans, minfo.ret, path)
+		c.currentReturn = previousReturn
 		if bodyTy != nil && !bodyTy.Equals(minfo.ret) && !isError(bodyTy) {
 			c.errorf(PosOf(m.Body), "expected `%s`, found `%s`", typeStr(minfo.ret), typeStr(bodyTy))
 		}
@@ -621,6 +804,8 @@ func (c *Checker) checkExpr(expr ast.Expr, env *environment, loans *borrowCtx, p
 		return c.checkExpr(e.Body, env, loans, path)
 	case *ast.IfExpr:
 		return c.checkIf(e, env, loans, path)
+	case *ast.MatchExpr:
+		return c.checkMatch(e, env, loans, path)
 	case *ast.FieldExpr:
 		return c.checkField(e, env, loans, path)
 	case *ast.IndexExpr:
@@ -663,10 +848,27 @@ func (c *Checker) canAccess(key string) bool {
 }
 
 func (c *Checker) checkPathExpr(e *ast.PathExpr) types.Type {
+	if enumKey, variant, ok := c.enumVariantPath(e.Segments); ok {
+		ei := c.enums[enumKey]
+		if fs, _ := c.variantFields(enumKey, ei, variant); len(fs) > 0 {
+			c.errorf(e.Pos, "enum variant `%s::%s` requires arguments", e.Segments[0], variant)
+			c.exprTypes[e] = &types.Error{}
+			return c.exprTypes[e]
+		}
+		ty := types.Type(&types.Named{Name: e.Segments[0]})
+		c.exprTypes[e] = ty
+		return ty
+	}
 	key, _, typeKey, method := c.resolvePathDetails(e.Segments)
 	if method != "" {
 		m := c.findInherentMethod(typeKey, method)
 		if m == nil {
+			// Associated const access: `Type::CONST` where CONST is a const in a
+			// trait impl for Type.
+			if ty, ok := c.findAssociatedConst(typeKey, method); ok {
+				c.exprTypes[e] = ty
+				return ty
+			}
 			if builtinPath(e.Segments) {
 				c.exprTypes[e] = i32AnyType()
 				return c.exprTypes[e]
@@ -759,6 +961,79 @@ func (c *Checker) resolvePathDetails(segments []string) (key string, isType bool
 	return "", false, "", ""
 }
 
+// enumVariantPath resolves `Enum::Variant` (optionally module-qualified) to
+// the enum key and variant name when the path targets a declared variant.
+func (c *Checker) enumVariantPath(segments []string) (string, string, bool) {
+	if len(segments) < 2 {
+		return "", "", false
+	}
+	enumName := segments[len(segments)-2]
+	variant := segments[len(segments)-1]
+	key := c.resolveName(enumName)
+	if key == "" {
+		return "", "", false
+	}
+	ei, ok := c.enums[key]
+	if !ok || !c.canAccess(key) {
+		return "", "", false
+	}
+	for _, v := range ei.decl.Variants {
+		if v.Name == variant {
+			return key, variant, true
+		}
+	}
+	return "", "", false
+}
+
+// variantFields lazily resolves and caches payload types of an enum variant.
+// ok is false when the variant is not declared on this enum.
+func (c *Checker) variantFields(enumKey string, ei *enumInfo, variant string) ([]types.Type, bool) {
+	if ei.fields == nil {
+		ei.fields = make(map[string][]types.Type)
+	}
+	if fs, ok := ei.fields[variant]; ok {
+		return fs, true
+	}
+	for _, v := range ei.decl.Variants {
+		if v.Name != variant {
+			continue
+		}
+		// Resolve payload types in the enum's defining module context.
+		prevIdx, prevPath := c.currentIdx, c.currentPath
+		if idx, exists := c.itemFile[enumKey]; exists {
+			c.currentIdx = idx
+			c.currentPath = c.Paths[idx]
+		}
+		var ts []types.Type
+		for _, ft := range v.Fields {
+			ts = append(ts, c.resolveType(ft, "", ei.decl.GenParams))
+		}
+		c.currentIdx, c.currentPath = prevIdx, prevPath
+		ei.fields[variant] = ts
+		return ts, true
+	}
+	return nil, false
+}
+
+// checkVariantConstructor type-checks `Enum::Variant(args)` value creation.
+func (c *Checker) checkVariantConstructor(e *ast.CallExpr, enumKey, variant string, env *environment, loans *borrowCtx, path string) types.Type {
+	ei := c.enums[enumKey]
+	fields, _ := c.variantFields(enumKey, ei, variant)
+	if len(fields) != len(e.Args) {
+		c.errorf(e.Pos, "enum variant `%s::%s` expected %d arguments, found %d", e.Func.(*ast.PathExpr).Segments[0], variant, len(fields), len(e.Args))
+		return &types.Error{}
+	}
+	for i, arg := range e.Args {
+		argTy := c.checkExpr(arg, env, loans, path)
+		if !types.Unify(fields[i], argTy, make(map[string]types.Type), map[string]string{}) && !isError(argTy) {
+			c.errorf(PosOf(arg), "expected `%s`, found `%s`", typeStr(fields[i]), typeStr(argTy))
+		}
+	}
+	ty := types.Type(&types.Named{Name: e.Func.(*ast.PathExpr).Segments[0]})
+	c.exprTypes[e] = ty
+	return ty
+}
+
 func (c *Checker) checkBinary(e *ast.BinaryExpr, env *environment, loans *borrowCtx, path string) types.Type {
 	left := c.checkExpr(e.Left, env, loans, path)
 	right := c.checkExpr(e.Right, env, loans, path)
@@ -825,6 +1100,8 @@ func (c *Checker) checkUnary(e *ast.UnaryExpr, env *environment, loans *borrowCt
 			c.errorf(PosOf(e.Operand), "expected `bool`, found `%s`", ty)
 		}
 		return types.Bool
+	case "?":
+		return c.checkTry(e, ty)
 	case "&", "&mut":
 		isMut := e.Op == "&mut"
 		ref := &types.Ref{Elem: ty, IsMut: isMut}
@@ -861,7 +1138,57 @@ func (c *Checker) checkUnary(e *ast.UnaryExpr, env *environment, loans *borrowCt
 	}
 }
 
+func (c *Checker) checkTry(e *ast.UnaryExpr, operand types.Type) types.Type {
+	app, ok := operand.(*types.Applied)
+	if !ok {
+		if !isError(operand) {
+			c.errorf(PosOf(e.Operand), "the `?` operator requires `Option` or `Result`, found `%s`", typeStr(operand))
+		}
+		return &types.Error{}
+	}
+	base, ok := app.Base.(*types.Named)
+	if !ok || (base.Name != "Option" && base.Name != "Result") {
+		c.errorf(PosOf(e.Operand), "the `?` operator requires `Option` or `Result`, found `%s`", typeStr(operand))
+		return &types.Error{}
+	}
+	ret, ok := c.currentReturn.(*types.Applied)
+	if !ok {
+		c.errorf(PosOf(e), "the `?` operator can only be used in a function returning `%s`", base.Name)
+		return &types.Error{}
+	}
+	retBase, ok := ret.Base.(*types.Named)
+	if !ok || retBase.Name != base.Name {
+		c.errorf(PosOf(e), "the `?` operator can only be used in a function returning `%s`", base.Name)
+		return &types.Error{}
+	}
+	switch base.Name {
+	case "Option":
+		if len(app.Args) != 1 || len(ret.Args) != 1 {
+			c.errorf(PosOf(e.Operand), "invalid generic arity for `%s` with `?`", base.Name)
+			return &types.Error{}
+		}
+		return app.Args[0]
+	case "Result":
+		if len(app.Args) != 2 || len(ret.Args) != 2 {
+			c.errorf(PosOf(e.Operand), "invalid generic arity for `%s` with `?`", base.Name)
+			return &types.Error{}
+		}
+		if !app.Args[1].Equals(ret.Args[1]) {
+			c.errorf(PosOf(e.Operand), "the error type of `%s?` is incompatible with `%s`", typeStr(operand), typeStr(c.currentReturn))
+			return &types.Error{}
+		}
+		return app.Args[0]
+	default:
+		return &types.Error{}
+	}
+}
+
 func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	if fn, ok := e.Func.(*ast.PathExpr); ok {
+		if enumKey, variant, ok := c.enumVariantPath(fn.Segments); ok {
+			return c.checkVariantConstructor(e, enumKey, variant, env, loans, path)
+		}
+	}
 	switch fn := e.Func.(type) {
 	case *ast.Ident:
 		if builtinPath([]string{fn.Name}) {
@@ -890,6 +1217,9 @@ func (c *Checker) checkCall(e *ast.CallExpr, env *environment, loans *borrowCtx,
 		key, _, typeKey, method := c.resolvePathDetails(fn.Segments)
 		if method != "" {
 			m := c.findInherentMethod(typeKey, method)
+			if m == nil {
+				m = c.stdMethodInfo(&types.TypeConstructor{Name: typeKey}, method)
+			}
 			if m == nil {
 				if builtinPath(fn.Segments) {
 					c.exprTypes[e] = i32AnyType()
@@ -981,6 +1311,9 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 		}
 		m := c.findInherentMethod(typeName, methodName)
 		if m == nil {
+			m = c.stdMethodInfo(&types.TypeConstructor{Name: typeName}, methodName)
+		}
+		if m == nil {
 			c.errorf(PosOf(field), "no static method `%s` found for type `%s`", methodName, typeName)
 			return &types.Error{}
 		}
@@ -1000,7 +1333,15 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 		c.errorf(PosOf(recvExpr), "method calls require a named type (got %s)", typeStr(recvTy))
 		return &types.Error{}
 	}
-	m := c.findInherentMethod(baseName, methodName)
+	m := c.stdMethodInfo(baseTy, methodName)
+	if m == nil {
+		m = c.findInherentMethod(baseName, methodName)
+	}
+	if m == nil {
+		if targetName := c.derefTargetName(baseTy); targetName != "" {
+			m = c.findInherentMethod(targetName, methodName)
+		}
+	}
 	if m == nil {
 		for _, impls := range c.traitImpls {
 			if impl, ok := impls[baseName]; ok {
@@ -1021,21 +1362,70 @@ func (c *Checker) checkMethodCall(field *ast.FieldExpr, args []ast.Expr, env *en
 	}
 	if isBuiltinStub(m) {
 		// Builtin stubs use a placeholder self type; accept any matching base name.
-	} else {
-		expectedSelf := &types.Ref{Elem: baseTy, IsMut: false}
-		if !m.selfType.Equals(expectedSelf) && !m.selfType.Equals(baseTy) {
-			c.errorf(PosOf(recvExpr), "expected `%s`, found `%s`", typeStr(m.selfType), typeStr(recvTy))
-			return &types.Error{}
-		}
+	} else if !selfTypeMatches(m.selfType, recvTy, baseTy) {
+		c.errorf(PosOf(recvExpr), "expected `%s`, found `%s`", typeStr(m.selfType), typeStr(recvTy))
+		return &types.Error{}
 	}
 	if loans != nil {
 		c.borrowShared(loans, recvExpr, recvTy)
 	}
 	minfo := *m
-	if !isBuiltinStub(m) && len(minfo.paramTypes) > 0 {
+	if m.decl != nil && len(minfo.paramTypes) > 0 {
+		// Real methods include `self` as the first parameter; strip it.
 		minfo.paramTypes = minfo.paramTypes[1:]
 	}
+	if isBuiltinStub(m) {
+		minfo.ret = c.builtinDerefMethodReturn(baseTy, methodName, minfo.ret, args)
+	}
 	return c.checkFnCall(&minfo, args, baseTy, env, loans, path)
+}
+
+func (c *Checker) builtinDerefMethodReturn(receiver types.Type, method string, fallback types.Type, args []ast.Expr) types.Type {
+	target := receiver
+	if app, ok := receiver.(*types.Applied); ok && len(app.Args) == 1 {
+		if base, ok := app.Base.(*types.Named); ok {
+			switch base.Name {
+			case "Box":
+				target = app.Args[0]
+			case "Vec":
+				target = &types.Slice{Elem: app.Args[0]}
+			}
+		}
+	}
+	if method == "indices" {
+		if app, ok := receiver.(*types.Applied); ok && len(app.Args) >= 1 {
+			if base, ok := app.Base.(*types.Named); ok && base.Name == "ImmutableSparseSet" {
+				return &types.Ref{Elem: &types.Slice{Elem: app.Args[0]}}
+			}
+		}
+	}
+	if method == "get_unchecked" {
+		if slice, ok := target.(*types.Slice); ok {
+			return &types.Ref{Elem: slice.Elem}
+		}
+	}
+	if method == "get" {
+		if slice, ok := target.(*types.Slice); ok {
+			var elem types.Type = slice.Elem
+			if len(args) == 1 {
+				if _, ok := args[0].(*ast.RangeExpr); ok {
+					elem = slice
+				}
+			}
+			return &types.Applied{
+				Base: &types.Named{Name: "Option"},
+				Args: []types.Type{&types.Ref{Elem: elem}},
+			}
+		}
+	}
+	if method == "debug_checked_unwrap" {
+		if app, ok := receiver.(*types.Applied); ok {
+			if base, ok := app.Base.(*types.Named); ok && base.Name == "Option" && len(app.Args) == 1 {
+				return app.Args[0]
+			}
+		}
+	}
+	return fallback
 }
 
 func (c *Checker) deref(t types.Type) types.Type {
@@ -1095,22 +1485,75 @@ func (c *Checker) findInherentMethod(typeName, method string) *fnInfo {
 	return nil
 }
 
+// findAssociatedConst looks up a trait-associated constant `CONST` for a type
+// by scanning the type's trait impls.
+func (c *Checker) findAssociatedConst(typeName, name string) (types.Type, bool) {
+	for _, impls := range c.traitImpls {
+		if impl, ok := impls[typeName]; ok {
+			if ty, exists := impl.assocConsts[name]; exists {
+				return ty, true
+			}
+		}
+	}
+	return nil, false
+}
+
 // isBuiltinStub returns true when the fnInfo was synthesised by the builtin
-// stub registry rather than loaded from a Rust declaration.
+// stub registry rather than loaded from a Rust declaration. Stdlib methods are
+// treated as real methods (proper receiver checks), not as relaxed stubs.
 func isBuiltinStub(info *fnInfo) bool {
-	if info == nil || info.decl != nil {
+	if info == nil || info.decl != nil || info.stdlib {
 		return false
 	}
 	return true
+}
+
+// selfTypeMatches reports whether a method's self type is compatible with the
+// receiver, allowing Rust auto-ref: a method taking &T or &mut T can be called
+// on a value of type T (auto-ref), and a method taking T by value requires T.
+func selfTypeMatches(self, recv, base types.Type) bool {
+	if self.Equals(recv) || self.Equals(base) {
+		return true
+	}
+	if r, ok := self.(*types.Ref); ok {
+		if r.Elem.Equals(base) || r.Elem.Equals(recv) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Checker) derefTargetName(t types.Type) string {
+	app, ok := t.(*types.Applied)
+	if !ok || len(app.Args) != 1 {
+		return ""
+	}
+	base, ok := app.Base.(*types.Named)
+	if !ok {
+		return ""
+	}
+	switch base.Name {
+	case "Vec":
+		return "slice"
+	case "Box":
+		return c.typeName(app.Args[0])
+	default:
+		return ""
+	}
 }
 
 func (c *Checker) typeName(t types.Type) string {
 	switch ty := t.(type) {
 	case *types.Named:
 		return ty.Name
+	case *types.TypeConstructor:
+		return ty.Name
 	case *types.Applied:
 		if named, ok := ty.Base.(*types.Named); ok {
 			return named.Name
+		}
+		if tc, ok := ty.Base.(*types.TypeConstructor); ok {
+			return tc.Name
 		}
 	case *types.Slice:
 		return "slice"
@@ -1124,12 +1567,186 @@ func (c *Checker) typeName(t types.Type) string {
 	return ""
 }
 
+func (c *Checker) checkMatch(e *ast.MatchExpr, env *environment, loans *borrowCtx, path string) types.Type {
+	scrutineeTy := c.checkExpr(e.Scrutinee, env, loans, path)
+	c.checkMatchExhaustive(e, scrutineeTy)
+	var resultTy types.Type
+	for _, arm := range e.Arms {
+		armEnv := newEnv(env)
+		armLoans := newBorrowCtx(loans)
+		for _, pattern := range arm.Patterns {
+			c.checkPattern(pattern, scrutineeTy, armEnv, false, path)
+		}
+		var bodyTy types.Type
+		if body, ok := arm.Body.(*ast.BlockExpr); ok {
+			bodyTy = c.checkBlock(body, armEnv, armLoans, types.Unit, path)
+		} else {
+			bodyTy = c.checkExpr(arm.Body, armEnv, armLoans, path)
+		}
+		if isError(bodyTy) {
+			continue
+		}
+		if resultTy == nil {
+			resultTy = bodyTy
+			continue
+		}
+		if !resultTy.Equals(bodyTy) {
+			c.errorf(PosOf(arm.Body), "match arms have incompatible types: expected `%s`, found `%s`", typeStr(resultTy), typeStr(bodyTy))
+		}
+	}
+	if resultTy == nil {
+		return &types.Error{}
+	}
+	return resultTy
+}
+
+// isVariantPattern reports whether a capitalized bare identifier names a
+// unit variant of the matched type (builtin Option/Result or a user enum).
+func (c *Checker) isVariantPattern(name string, ty types.Type) bool {
+	switch t := ty.(type) {
+	case *types.Applied:
+		base := ""
+		switch b := t.Base.(type) {
+		case *types.Named:
+			base = b.Name
+		case *types.TypeConstructor:
+			base = b.Name
+		}
+		switch base {
+		case "Option":
+			return name == "None" || name == "Some"
+		case "Result":
+			return name == "Ok" || name == "Err"
+		}
+		return false
+	case *types.Named:
+		key := c.resolveName(t.Name)
+		if key == "" {
+			return false
+		}
+		if ei, ok := c.enums[key]; ok {
+			for _, v := range ei.decl.Variants {
+				if v.Name == name && len(v.Fields) == 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// checkLitPattern validates a literal pattern against the matched type.
+func (c *Checker) checkLitPattern(p *ast.PatLit, ty types.Type) {
+	if ty == nil || isError(ty) {
+		return
+	}
+	if _, ok := ty.(*types.Generic); ok {
+		return // untyped placeholder context (builtin stubs)
+	}
+	switch p.Kind {
+	case "int":
+		if !ty.Equals(types.I32) {
+			c.errorf(p.Pos, "expected `%s`, found integer literal pattern", typeStr(ty))
+		}
+	case "bool":
+		if !ty.Equals(types.Bool) {
+			c.errorf(p.Pos, "expected `%s`, found boolean literal pattern", typeStr(ty))
+		}
+	case "str":
+		if _, ok := ty.(*types.Builtin); !ok || ty.String() != "String" {
+			c.errorf(p.Pos, "expected `%s`, found string literal pattern", typeStr(ty))
+		}
+	}
+}
+
+// checkMatchExhaustive reports a non-exhaustive match error when the scrutinee
+// is an enum and the arms do not cover all variants (unless a wildcard or
+// binding arm covers everything).
+func (c *Checker) checkMatchExhaustive(e *ast.MatchExpr, scrutineeTy types.Type) {
+	name := c.typeName(scrutineeTy)
+	if name == "" {
+		return
+	}
+	key := c.resolveName(name)
+	if key == "" {
+		return
+	}
+	ei, ok := c.enums[key]
+	if !ok {
+		return
+	}
+	if len(ei.decl.Variants) == 0 {
+		return
+	}
+	covered := make(map[string]bool)
+	for _, arm := range e.Arms {
+		for _, p := range arm.Patterns {
+			if !collectCovered(p, covered, ei) {
+				return // wildcard/binding arm covers everything
+			}
+		}
+	}
+	var missing []string
+	for _, v := range ei.decl.Variants {
+		if !covered[v.Name] {
+			missing = append(missing, v.Name)
+		}
+	}
+	if len(missing) > 0 {
+		suffix := ""
+		if len(missing) > 1 {
+			suffix = "s"
+		}
+		c.errorf(e.Pos, "non-exhaustive `match`: variant%s %s not covered", suffix, strings.Join(missing, ", "))
+	}
+}
+
+// collectCovered adds variant names matched by pat to covered and reports
+// whether coverage stays partial. A wildcard or binding pattern covers
+// everything, in which case it reports false.
+func collectCovered(pat ast.Pattern, covered map[string]bool, ei *enumInfo) bool {
+	switch p := pat.(type) {
+	case *ast.PatWildcard:
+		return false // covers everything
+	case *ast.PatIdent:
+		if ei != nil && len(p.Name) > 0 && p.Name[0] >= 'A' && p.Name[0] <= 'Z' {
+			for _, v := range ei.decl.Variants {
+				if v.Name == p.Name && len(v.Fields) == 0 {
+					covered[p.Name] = true
+					return true
+				}
+			}
+		}
+		return false
+	case *ast.PatPath:
+		if len(p.Path) > 0 {
+			covered[p.Path[len(p.Path)-1]] = true
+		}
+		return true
+	case *ast.PatOr:
+		for _, alt := range p.Alternatives {
+			if !collectCovered(alt, covered, ei) {
+				return false
+			}
+		}
+		return true
+	case *ast.PatLit, *ast.PatRange:
+		return true // value patterns cover no enum variant
+	default:
+		return false
+	}
+}
+
 func (c *Checker) checkIf(e *ast.IfExpr, env *environment, loans *borrowCtx, path string) types.Type {
 	cond := c.checkExpr(e.Cond, env, loans, path)
-	if !cond.Equals(types.Bool) && !isError(cond) {
+	thenEnv := env
+	if e.Pattern != nil {
+		thenEnv = newEnv(env)
+		c.checkPattern(e.Pattern, cond, thenEnv, false, path)
+	} else if !cond.Equals(types.Bool) && !isError(cond) {
 		c.errorf(PosOf(e.Cond), "expected `bool`, found `%s`", cond)
 	}
-	thenTy := c.checkBlock(e.ThenBlock, env, loans, types.Unit, path)
+	thenTy := c.checkBlock(e.ThenBlock, thenEnv, loans, types.Unit, path)
 	if e.ElseBlock != nil {
 		elseTy := c.checkBlock(e.ElseBlock, env, loans, types.Unit, path)
 		if !thenTy.Equals(elseTy) && !isError(thenTy) && !isError(elseTy) {
@@ -1227,6 +1844,15 @@ func (c *Checker) hasTraitImpl(ty types.Type, trait string) bool {
 	}
 	if m, ok := c.traitImpls[trait]; ok {
 		if _, ok := m[name]; ok {
+			// A type implementing a trait must also implement all of its
+			// supertraits (transitive closure).
+			if tr, ok := c.traits[trait]; ok {
+				for _, sup := range tr.supertraits {
+					if !c.hasTraitImpl(ty, sup) {
+						return false
+					}
+				}
+			}
 			return true
 		}
 	}
@@ -1356,6 +1982,146 @@ func (c *Checker) checkStructLitWithAnnotation(e *ast.StructLit, annot types.Typ
 	return c.checkStructLitFields(e, st, applied.Args, env, loans, path)
 }
 
+func (c *Checker) checkExprExpected(expr ast.Expr, expected types.Type, env *environment, loans *borrowCtx, path string) types.Type {
+	// if/else value expression in a known context: check both branches against
+	// the expected type so Some(x)/None/Ok/Err infer payloads correctly.
+	if ife, ok := expr.(*ast.IfExpr); ok && expected != nil {
+		cond := c.checkExpr(ife.Cond, env, loans, path)
+		ifEnv := env
+		if ife.Pattern != nil {
+			ifEnv = newEnv(env)
+			c.checkPattern(ife.Pattern, cond, ifEnv, false, path)
+		} else if !cond.Equals(types.Bool) && !isError(cond) {
+			c.errorf(PosOf(ife.Cond), "expected `bool`, found `%s`", cond)
+		}
+		thenTy := c.checkBlock(ife.ThenBlock, ifEnv, loans, expected, path)
+		if ife.ElseBlock != nil {
+			elseTy := c.checkBlock(ife.ElseBlock, env, loans, expected, path)
+			if !thenTy.Equals(elseTy) && !isError(thenTy) && !isError(elseTy) {
+				c.errorf(PosOf(ife.ElseBlock), "expected `%s`, found `%s`", typeStr(thenTy), typeStr(elseTy))
+			}
+			c.exprTypes[expr] = thenTy
+			return thenTy
+		}
+		return types.Unit
+	}
+	// Unit enum variant `None` (Ident) infers its payload from the expected
+	// Option<T> type.
+	if id, ok := expr.(*ast.Ident); ok && id.Name == "None" {
+		if app, ok := expected.(*types.Applied); ok {
+			if name := appBaseName(app); name == "Option" && len(app.Args) == 1 {
+				c.exprTypes[expr] = expected
+				return expected
+			}
+		}
+	}
+	call, ok := expr.(*ast.CallExpr)
+	if ok && len(call.Args) == 0 {
+		if fn, ok := call.Func.(*ast.PathExpr); ok && len(fn.Segments) == 2 {
+			// Default::default() and Vec::new()/HashMap::new()/Box::new()/String::new()
+			// infer their type parameters from the expected type.
+			if fn.Segments[0] == "Default" && fn.Segments[1] == "default" {
+				c.exprTypes[expr] = expected
+				return expected
+			}
+			if fn.Segments[1] == "new" {
+				if app, ok := expected.(*types.Applied); ok {
+					name := ""
+					switch b := app.Base.(type) {
+					case *types.TypeConstructor:
+						name = b.Name
+					case *types.Named:
+						name = b.Name
+					}
+					if name == fn.Segments[0] {
+						c.exprTypes[expr] = expected
+						return expected
+					}
+				}
+			}
+		}
+	}
+	// Enum variant construction: Some(x)/None/Ok(x)/Err(x) infer the payload
+	// type from the expected Option<T>/Result<T,E>.
+	if call != nil {
+		if fn, ok := call.Func.(*ast.Ident); ok {
+			switch fn.Name {
+			case "Some", "None":
+				if app, ok := expected.(*types.Applied); ok {
+					if name := appBaseName(app); name == "Option" && len(app.Args) == 1 {
+						c.exprTypes[expr] = expected
+						return expected
+					}
+				}
+			case "Ok", "Err":
+				if app, ok := expected.(*types.Applied); ok {
+					if name := appBaseName(app); name == "Result" && len(app.Args) == 2 {
+						c.exprTypes[expr] = expected
+						return expected
+					}
+				}
+			}
+		}
+		// Generic function call with no arguments: infer type parameters from the
+		// expected return type (unification with the declared return type).
+		if expected != nil && !isError(expected) && len(call.Args) == 0 {
+			if ret, ok := c.inferGenericFromReturn(call, expected); ok {
+				c.exprTypes[expr] = ret
+				return ret
+			}
+		}
+	}
+	return c.checkExpr(expr, env, loans, path)
+}
+
+// inferGenericFromReturn tries to infer a generic function's type parameters
+// by unifying the expected type with its declared return type. It succeeds
+// only when every generic parameter is resolved. Args are left unchecked (the
+// caller falls back to checkExpr when inference fails).
+func (c *Checker) inferGenericFromReturn(call *ast.CallExpr, expected types.Type) (types.Type, bool) {
+	var key string
+	switch fn := call.Func.(type) {
+	case *ast.Ident:
+		key = c.resolveName(fn.Name)
+	case *ast.PathExpr:
+		key = c.resolvePath(fn.Segments)
+	default:
+		return nil, false
+	}
+	if key == "" {
+		return nil, false
+	}
+	info, ok := c.fns[key]
+	if !ok || len(info.genParams) == 0 {
+		return nil, false
+	}
+	mapping := make(map[string]types.Type)
+	lifetimeMapping := make(map[string]string)
+	if !types.Unify(expected, info.ret, mapping, lifetimeMapping) {
+		return nil, false
+	}
+	for _, p := range info.genParams {
+		if _, ok := mapping[p]; !ok {
+			return nil, false
+		}
+	}
+	return types.Substitute(info.ret, mapping, lifetimeMapping), true
+}
+
+func appBaseName(t types.Type) string {
+	app, ok := t.(*types.Applied)
+	if !ok {
+		return ""
+	}
+	switch b := app.Base.(type) {
+	case *types.TypeConstructor:
+		return b.Name
+	case *types.Named:
+		return b.Name
+	}
+	return ""
+}
+
 func (c *Checker) checkStructLitFields(e *ast.StructLit, st *structInfo, args []types.Type, env *environment, loans *borrowCtx, path string) types.Type {
 	fieldMap := make(map[string]types.Type)
 	for name, fty := range st.fields {
@@ -1377,7 +2143,7 @@ func (c *Checker) checkStructLitFields(e *ast.StructLit, st *structInfo, args []
 			c.errorf(init.Pos, "unknown field `%s` on struct `%s`", init.Name, st.decl.Name)
 			continue
 		}
-		valTy := c.checkExpr(init.Value, env, loans, path)
+		valTy := c.checkExprExpected(init.Value, expected, env, loans, path)
 		if !valTy.Equals(expected) && !isError(valTy) {
 			c.errorf(PosOf(init.Value), "expected `%s`, found `%s`", typeStr(expected), typeStr(valTy))
 		}
@@ -1441,6 +2207,63 @@ func (c *Checker) checkMacroCall(e *ast.MacroCallExpr, env *environment, loans *
 	return c.checkExpr(m.Body, env, loans, path)
 }
 
+func (c *Checker) resolveAlias(key string, info *aliasInfo, args []types.Type) types.Type {
+	base := c.resolveAliasBase(key, info)
+	if isError(base) {
+		return base
+	}
+	if len(args) != len(info.decl.GenParams) {
+		c.errorf(info.decl.Pos, "type alias `%s` expects %d arguments, found %d", info.decl.Name, len(info.decl.GenParams), len(args))
+		return &types.Error{}
+	}
+	return substituteAlias(base, info.decl.GenParams, args)
+}
+
+func (c *Checker) resolveAliasBase(key string, info *aliasInfo) types.Type {
+	if info.base != nil {
+		return info.base
+	}
+	if info.resolving {
+		if !c.aliasCycleReported {
+			c.errorf(info.decl.Pos, "cyclic type alias `%s`", key)
+			c.aliasCycleReported = true
+		}
+		return &types.Error{}
+	}
+	info.resolving = true
+	previousIdx := c.currentIdx
+	previousPath := c.currentPath
+	c.currentIdx = info.fileIdx
+	c.currentPath = c.Paths[info.fileIdx]
+	info.base = c.resolveType(info.decl.Ty, c.currentPath, info.decl.GenParams)
+	c.currentIdx = previousIdx
+	c.currentPath = previousPath
+	info.resolving = false
+	return info.base
+}
+
+func substituteAlias(base types.Type, params []string, args []types.Type) types.Type {
+	if len(params) == 0 {
+		return base
+	}
+	mapping := make(map[string]types.Type, len(params))
+	for i, param := range params {
+		if i < len(args) {
+			mapping[param] = args[i]
+		}
+	}
+	return types.Substitute(base, mapping, nil)
+}
+
+func containsStr(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types.Type {
 	if t == nil {
 		return types.Unit
@@ -1469,19 +2292,32 @@ func (c *Checker) resolveType(t ast.Type, path string, genParams []string) types
 				return &types.Generic{Name: ty.Name}
 			}
 		}
+		var args []types.Type
+		for _, arg := range ty.Args {
+			args = append(args, c.resolveType(arg, path, genParams))
+		}
+		key := c.resolvePath(strings.Split(ty.Name, "::"))
+		if alias, ok := c.aliases[key]; ok {
+			return c.resolveAlias(key, alias, args)
+		}
 		base := types.Type(&types.Named{Name: ty.Name})
-		if len(ty.Args) > 0 {
-			var args []types.Type
-			for _, a := range ty.Args {
-				args = append(args, c.resolveType(a, path, genParams))
-			}
+		if len(args) > 0 {
 			base = &types.Applied{Base: base, Args: args}
 		}
 		return base
 	case *ast.RefType:
 		return &types.Ref{Elem: c.resolveType(ty.Elem, path, genParams), IsMut: ty.IsMut, Lifetime: ty.Lifetime}
 	case *ast.ArrayType:
-		return &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Len: ty.Len}
+		arr := &types.Array{Elem: c.resolveType(ty.Elem, path, genParams), Len: ty.Len}
+		if ty.LenName != "" {
+			arr.LenName = ty.LenName
+			if !containsStr(genParams, ty.LenName) {
+				c.errorf(ty.Pos, "const parameter `%s` is not in scope", ty.LenName)
+			}
+		}
+		return arr
+	case *ast.ConstIntLitType:
+		return &types.ConstInt{Val: ty.Val}
 	case *ast.SliceType:
 		return &types.Slice{Elem: c.resolveType(ty.Elem, path, genParams)}
 	case *ast.TupleType:
@@ -1510,7 +2346,42 @@ func (c *Checker) implTraitBase(t ast.Type, path string, genParams []string) typ
 }
 
 func (c *Checker) errorf(pos ast.Pos, format string, args ...interface{}) {
-	c.Reporter.Errorf(c.currentPath, 1, 1, format, args...)
+	line, col := c.lineCol(c.currentIdx, int(pos))
+	c.Reporter.Errorf(c.currentPath, line, col, format, args...)
+}
+
+// SetSources provides the raw file contents (aligned with Files/Paths) used
+// for translating byte offsets into line:col diagnostics positions.
+func (c *Checker) SetSources(sources [][]byte) {
+	c.sources = sources
+	c.lineCache = make(map[int][]int)
+}
+
+// lineCol converts a byte offset (0-based, as produced by the lexer) into a
+// 1-based line/column pair. Falls back to 1:1 when no source is available.
+func (c *Checker) lineCol(fileIdx int, off int) (int, int) {
+	if off < 0 || fileIdx < 0 || fileIdx >= len(c.sources) {
+		return 1, 1
+	}
+	starts, ok := c.lineCache[fileIdx]
+	if !ok {
+		src := c.sources[fileIdx]
+		starts = make([]int, 1, 64)
+		for i := 0; i < len(src); i++ {
+			if src[i] == '\n' {
+				starts = append(starts, i+1)
+			}
+		}
+		if c.lineCache == nil {
+			c.lineCache = make(map[int][]int)
+		}
+		c.lineCache[fileIdx] = starts
+	}
+	line := sort.Search(len(starts), func(i int) bool { return starts[i] > off }) - 1
+	if line < 0 {
+		line = 0
+	}
+	return line + 1, off - starts[line] + 1
 }
 
 func PosOf(n ast.Node) ast.Pos {
@@ -1569,15 +2440,21 @@ func (c *Checker) checkLifetimes(pos ast.Pos, t types.Type, scope []string) {
 func (c *Checker) checkBlock(block *ast.BlockExpr, env *environment, loans *borrowCtx, ret types.Type, path string) types.Type {
 	local := newEnv(env)
 	localLoans := newBorrowCtx(loans)
-	for _, s := range block.Stmts {
+	for i, s := range block.Stmts {
 		c.checkStmt(s, local, localLoans, ret, path)
-		localLoans.releaseLoans()
+		localLoans.endStatement(block.Stmts[i+1:], block.Result)
 	}
 	if block.Result != nil {
 		if lit, ok := block.Result.(*ast.StructLit); ok {
 			if applied, ok := ret.(*types.Applied); ok {
 				return c.checkStructLitWithAnnotation(lit, applied, local, localLoans, path)
 			}
+		}
+		// Check the tail expression against the block's expected return type so
+		// constructors like Some(x)/Ok(x) infer their payload from the return
+		// type (proper Rust semantics).
+		if ret != nil && !isError(ret) {
+			return c.checkExprExpected(block.Result, ret, local, localLoans, path)
 		}
 		return c.checkExpr(block.Result, local, localLoans, path)
 	}
@@ -1594,11 +2471,17 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 		var valTy types.Type
 		if lit, ok := st.Value.(*ast.StructLit); ok && annot != nil {
 			valTy = c.checkStructLitWithAnnotation(lit, annot, env, loans, path)
+		} else if annot != nil {
+			valTy = c.checkExprExpected(st.Value, annot, env, loans, path)
+			if loans != nil {
+				c.move(loans, st.Value, valTy)
+				c.registerRefHolder(loans, st.Name, st.Value)
+			}
 		} else {
 			valTy = c.checkExpr(st.Value, env, loans, path)
 			if loans != nil {
 				c.move(loans, st.Value, valTy)
-				c.reapplyBorrow(loans, env, st.Value, valTy)
+				c.registerRefHolder(loans, st.Name, st.Value)
 			}
 		}
 		if annot != nil {
@@ -1616,7 +2499,18 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 			env.set(st.Name, ty, st.IsMut)
 		}
 	case *ast.AssignStmt:
+		if loans != nil {
+			// Reassignment ends the old reference held by the target, if any.
+			if id, ok := st.Left.(*ast.Ident); ok {
+				loans.removeHolder(id.Name)
+			}
+		}
 		c.checkAssign(st, env, loans, path)
+		if loans != nil {
+			if id, ok := st.Left.(*ast.Ident); ok {
+				c.registerRefHolder(loans, id.Name, st.Right)
+			}
+		}
 	case *ast.ReturnStmt:
 		var ty types.Type = types.Unit
 		if st.Expr != nil {
@@ -1652,16 +2546,136 @@ func (c *Checker) checkStmt(s ast.Stmt, env *environment, loans *borrowCtx, ret 
 func (c *Checker) checkPattern(pat ast.Pattern, ty types.Type, env *environment, isMut bool, path string) {
 	switch p := pat.(type) {
 	case *ast.PatIdent:
-		env.set(p.Name, ty, isMut)
+		if len(p.Name) > 0 && p.Name[0] >= 'A' && p.Name[0] <= 'Z' && c.isVariantPattern(p.Name, ty) {
+			// A capitalized name that matches a unit variant (`None`, `Ok`,
+			// `Active`) is a path pattern, not a catch-all binding.
+			return
+		}
+		if p.IsRef {
+			// `ref x` binds x: &T; `ref mut x` binds x: &mut T.
+			env.set(p.Name, &types.Ref{Elem: ty, IsMut: p.IsMut}, false)
+			return
+		}
+		env.set(p.Name, ty, isMut || p.IsMut)
 	case *ast.PatWildcard:
 		return
 	case *ast.PatStruct:
 		c.checkStructPattern(p, ty, env, isMut, path)
 	case *ast.PatTuple:
 		c.checkTuplePattern(p, ty, env, isMut, path)
+	case *ast.PatPath:
+		c.checkPathPattern(p, ty, env, isMut, path)
+	case *ast.PatRange:
+		return // integer range literal pattern: no bindings
+	case *ast.PatLit:
+		c.checkLitPattern(p, ty)
+	case *ast.PatSlice:
+		c.checkSlicePattern(p, ty, env, isMut, path)
+	case *ast.PatOr:
+		for _, alt := range p.Alternatives {
+			c.checkPattern(alt, ty, env, isMut, path)
+		}
 	default:
 		c.errorf(PosOf(pat), "unsupported pattern")
 	}
+}
+
+func (c *Checker) checkPathPattern(pat *ast.PatPath, ty types.Type, env *environment, isMut bool, path string) {
+	// User enum tuple variants bind their sub-patterns to the declared payload
+	// types of the matched variant.
+	if len(pat.Path) > 0 {
+		if name := c.typeName(ty); name != "" {
+			if key := c.resolveName(name); key != "" {
+				if ei, ok := c.enums[key]; ok {
+					variant := pat.Path[len(pat.Path)-1]
+					if fs, known := c.variantFields(key, ei, variant); known {
+						if len(fs) == len(pat.Elements) {
+							for i, elem := range pat.Elements {
+								c.checkPattern(elem, fs[i], env, isMut, path)
+							}
+							return
+						}
+						c.errorf(pat.Pos, "pattern has %d subpatterns but variant `%s` has %d field(s)", len(pat.Elements), variant, len(fs))
+						return
+					}
+				}
+			}
+		}
+	}
+	if len(pat.Elements) == 0 {
+		return
+	}
+	// Builtin Option/Result variants bind their sub-patterns to payload types.
+	if ap, ok := ty.(*types.Applied); ok && len(pat.Path) > 0 {
+		base := appBaseName(ap)
+		if base == "Option" || base == "Result" {
+			variant := pat.Path[len(pat.Path)-1]
+			var payload types.Type
+			switch {
+			case base == "Option" && variant == "Some" && len(ap.Args) == 1:
+				payload = ap.Args[0]
+			case base == "Result" && variant == "Ok" && len(ap.Args) == 2:
+				payload = ap.Args[0]
+			case base == "Result" && variant == "Err" && len(ap.Args) == 2:
+				payload = ap.Args[1]
+			}
+			known := payload != nil || (base == "Option" && variant == "None")
+			if known {
+				want := 0
+				if payload != nil {
+					want = 1
+				}
+				if len(pat.Elements) != want {
+					c.errorf(pat.Pos, "pattern has %d subpatterns but variant `%s` has %d field(s)", len(pat.Elements), variant, want)
+					return
+				}
+				if want == 1 {
+					c.checkPattern(pat.Elements[0], payload, env, isMut, path)
+				}
+				return
+			}
+		}
+	}
+	// HashMap entry variants have concrete field types in the standard library.
+	// Keep these types explicit so dereference and method checking remain strict.
+	fieldTy := types.Type(&types.Generic{Name: "_"})
+	if len(pat.Path) == 2 && pat.Path[0] == "Entry" {
+		switch pat.Path[1] {
+		case "Occupied":
+			fieldTy = &types.Named{Name: "OccupiedEntry"}
+		case "Vacant":
+			fieldTy = &types.Named{Name: "VacantEntry"}
+		}
+	}
+	for _, elem := range pat.Elements {
+		c.checkPattern(elem, fieldTy, env, isMut, path)
+	}
+}
+
+// checkSlicePattern binds each element of an array/slice pattern to the
+// element type of the scrutinee.
+func (c *Checker) checkSlicePattern(pat *ast.PatSlice, ty types.Type, env *environment, isMut bool, path string) {
+	elemTy := c.sliceElemType(ty)
+	for _, elem := range pat.Elements {
+		c.checkPattern(elem, elemTy, env, isMut, path)
+	}
+}
+
+// sliceElemType returns the element type of an array, slice or Vec type.
+func (c *Checker) sliceElemType(t types.Type) types.Type {
+	switch ty := t.(type) {
+	case *types.Array:
+		return ty.Elem
+	case *types.Slice:
+		return ty.Elem
+	case *types.Applied:
+		if len(ty.Args) == 1 {
+			return ty.Args[0]
+		}
+	case *types.Ref:
+		return c.sliceElemType(ty.Elem)
+	}
+	return &types.Generic{Name: "_"}
 }
 
 func (c *Checker) checkTuplePattern(pat *ast.PatTuple, ty types.Type, env *environment, isMut bool, path string) {
@@ -1718,7 +2732,13 @@ func (c *Checker) checkStructPattern(pat *ast.PatStruct, ty types.Type, env *env
 		c.errorf(pat.Pos, "generic struct patterns require explicit type annotation")
 		return
 	}
-	if !want.Equals(ty) && !isError(ty) {
+	matchTy := ty
+	if ref, ok := ty.(*types.Ref); ok {
+		// Rust match ergonomics permits a struct pattern to match through
+		// a shared reference and binds its fields by reference.
+		matchTy = ref.Elem
+	}
+	if !want.Equals(matchTy) && !isError(matchTy) {
 		c.errorf(pat.Pos, "expected `%s`, found `%s`", typeStr(want), typeStr(ty))
 		return
 	}

@@ -83,7 +83,7 @@ func main() {
 }
 
 func buildPath(path string) (string, error) {
-	files, paths, modPaths, err := loadModules(path)
+	files, paths, modPaths, sources, err := loadModules(path)
 	if err != nil {
 		return "", err
 	}
@@ -92,6 +92,7 @@ func buildPath(path string) (string, error) {
 	}
 	rep := &diag.Reporter{}
 	chk := checker.New(files, paths, rep, modPaths)
+	chk.SetSources(sources)
 	if !chk.Check() {
 		return "", fmt.Errorf("%s", rep.String())
 	}
@@ -190,7 +191,7 @@ func findTCC() (string, error) {
 }
 
 func checkPath(path string) error {
-	files, paths, modPaths, err := loadModules(path)
+	files, paths, modPaths, sources, err := loadModules(path)
 	if err != nil {
 		return err
 	}
@@ -204,6 +205,7 @@ func checkPath(path string) error {
 	}
 	rep := &diag.Reporter{}
 	chk := checker.New(files, paths, rep, modPaths)
+	chk.SetSources(sources)
 	chk.Check()
 	if rep.HasErrors() {
 		return fmt.Errorf("%s", rep.String())
@@ -211,21 +213,21 @@ func checkPath(path string) error {
 	return nil
 }
 
-func loadModules(dir string) ([]*ast.File, []string, [][]string, error) {
+func loadModules(dir string) ([]*ast.File, []string, [][]string, [][]byte, error) {
 	rootDir := dir
 	root, err := findRootFile(rootDir, true)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if root == "" {
 		rootDir = filepath.Join(dir, "src")
 		root, err = findRootFile(rootDir, false)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 	}
 	if root == "" {
-		return nil, nil, nil, fmt.Errorf("no root .rs file in %s", dir)
+		return nil, nil, nil, nil, fmt.Errorf("no root .rs file in %s", dir)
 	}
 	return loadFile(filepath.Join(rootDir, root), []string{}, rootDir)
 }
@@ -255,19 +257,19 @@ func findRootFile(dir string, allowAnyRustFile bool) (string, error) {
 	return root, nil
 }
 
-func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string, [][]string, error) {
+func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string, [][]string, [][]byte, error) {
 	if os.Getenv("BLINK_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "loading %s\n", path)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("cannot read %s: %w", path, err)
+		return nil, nil, nil, nil, fmt.Errorf("cannot read %s: %w", path, err)
 	}
 	l := lexer.New(data)
 	p := parser.New(l, data)
 	file, err := p.ParseFile()
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("parse error in %s: %w", path, err)
+		return nil, nil, nil, nil, fmt.Errorf("parse error in %s: %w", path, err)
 	}
 	if os.Getenv("BLINK_DEBUG") != "" {
 		var ms runtime.MemStats
@@ -277,6 +279,7 @@ func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string,
 	var childFiles []*ast.File
 	var childPaths []string
 	var childModPaths [][]string
+	var childSources [][]byte
 	for _, d := range file.Decls {
 		mod, ok := d.(*ast.ModDecl)
 		if !ok || mod.Inline != nil {
@@ -284,16 +287,18 @@ func loadFile(path string, modPath []string, dir string) ([]*ast.File, []string,
 		}
 		childPath := filepath.Join(dir, mod.File)
 		childModPath := append(append([]string{}, modPath...), mod.Name)
-		cfs, cps, cmps, err := loadFile(childPath, childModPath, dir)
+		cfs, cps, cmps, csrcs, err := loadFile(childPath, childModPath, dir)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		childFiles = append(childFiles, cfs...)
 		childPaths = append(childPaths, cps...)
 		childModPaths = append(childModPaths, cmps...)
+		childSources = append(childSources, csrcs...)
 	}
 	resultFiles := append([]*ast.File{file}, childFiles...)
 	resultPaths := append([]string{path}, childPaths...)
 	resultModPaths := append([][]string{modPath}, childModPaths...)
-	return resultFiles, resultPaths, resultModPaths, nil
+	resultSources := append([][]byte{data}, childSources...)
+	return resultFiles, resultPaths, resultModPaths, resultSources, nil
 }

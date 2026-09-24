@@ -114,11 +114,36 @@ func (EnumDecl) astNode()         {}
 func (EnumDecl) declNode()        {}
 func (d EnumDecl) IsPublic() bool { return d.Pub }
 
-// Variant represents an enum variant.
+// Variant represents an enum variant, optionally with tuple payload fields
+// (`Blocked(i32)`) or named struct-style fields (`Point { x: i32 }`).
 type Variant struct {
-	Pos  Pos
-	Name string
+	Pos        Pos
+	Name       string
+	Fields     []Type
+	FieldNames []string // parallel to Fields for struct variants
 }
+
+// AssocTypeDecl is an associated type declaration inside a trait or impl.
+// Ty is nil when the declaration has no default (`type Item;`).
+type AssocTypeDecl struct {
+	Pos       Pos
+	Name      string
+	Ty        Type // nil if no default
+	GenParams []string
+}
+
+func (AssocTypeDecl) astNode() {}
+
+// AssocConstDecl is an associated constant declaration inside a trait or impl.
+// Value is nil in a trait signature (`const Y: i32;`).
+type AssocConstDecl struct {
+	Pos   Pos
+	Name  string
+	Ty    Type
+	Value Expr // nil in trait signature
+}
+
+func (AssocConstDecl) astNode() {}
 
 // TraitDecl represents a trait declaration.
 type TraitDecl struct {
@@ -128,7 +153,10 @@ type TraitDecl struct {
 	LifetimeParams []string
 	GenParams      []string
 	Bounds         []Constraint
+	Supertraits    []string
 	Methods        []*FnDecl
+	AssocTypes     []*AssocTypeDecl
+	AssocConsts    []*AssocConstDecl
 }
 
 func (TraitDecl) astNode()         {}
@@ -137,12 +165,14 @@ func (d TraitDecl) IsPublic() bool { return d.Pub }
 
 // ImplDecl represents an impl block (trait or inherent).
 type ImplDecl struct {
-	Pos       Pos
-	Trait     string // empty for inherent impl
-	ForType   Type
-	GenParams []string
-	Bounds    []Constraint
-	Methods   []*FnDecl
+	Pos         Pos
+	Trait       string // empty for inherent impl
+	ForType     Type
+	GenParams   []string
+	Bounds      []Constraint
+	Methods     []*FnDecl
+	AssocTypes  []*AssocTypeDecl
+	AssocConsts []*AssocConstDecl
 }
 
 func (ImplDecl) astNode()       {}
@@ -249,8 +279,10 @@ type Pattern interface {
 
 // PatIdent matches any value and binds it to a name.
 type PatIdent struct {
-	Pos  Pos
-	Name string
+	Pos   Pos
+	Name  string
+	IsRef bool // `ref x` / `ref mut x`: bind a reference to the place
+	IsMut bool // `mut x` / `ref mut x`
 }
 
 func (PatIdent) astNode()     {}
@@ -347,10 +379,11 @@ func (StaticDecl) IsPublic() bool { return false }
 
 // TypeAliasDecl is a type alias declaration.
 type TypeAliasDecl struct {
-	Pos  Pos
-	Pub  bool
-	Name string
-	Ty   Type
+	Pos       Pos
+	Pub       bool
+	Name      string
+	GenParams []string
+	Ty        Type
 }
 
 func (TypeAliasDecl) astNode()       {}
@@ -365,6 +398,56 @@ type PatTuple struct {
 
 func (PatTuple) astNode()     {}
 func (PatTuple) patternNode() {}
+
+// PatSlice matches an array/slice pattern and binds its elements.
+type PatSlice struct {
+	Pos      Pos
+	Elements []Pattern
+}
+
+func (PatSlice) astNode()     {}
+func (PatSlice) patternNode() {}
+
+// PatPath matches an enum variant path and binds its fields.
+type PatPath struct {
+	Pos      Pos
+	Path     []string
+	Elements []Pattern
+}
+
+func (PatPath) astNode()     {}
+func (PatPath) patternNode() {}
+
+// PatRange matches an integer literal range pattern (`1..=5`, `1..5`).
+type PatRange struct {
+	Pos       Pos
+	Low       int64
+	High      int64
+	Inclusive bool
+}
+
+func (PatRange) astNode()     {}
+func (PatRange) patternNode() {}
+
+// PatOr matches any of its alternative patterns (`A | B`).
+type PatOr struct {
+	Pos          Pos
+	Alternatives []Pattern
+}
+
+func (PatOr) astNode()     {}
+func (PatOr) patternNode() {}
+
+// PatLit matches a literal value (`5`, `-3`, `true`, "text").
+type PatLit struct {
+	Pos  Pos
+	Kind string // "int", "bool" or "str"
+	Val  string // int digits, "1"/"0" for bool, raw text for string
+	Neg  bool   // negative integer literal
+}
+
+func (PatLit) astNode()     {}
+func (PatLit) patternNode() {}
 
 // AssignStmt is an assignment statement.
 type AssignStmt struct {
@@ -503,12 +586,29 @@ func (CallExpr) exprNode() {}
 type IfExpr struct {
 	Pos       Pos
 	Cond      Expr
+	Pattern   Pattern
 	ThenBlock *BlockExpr
 	ElseBlock *BlockExpr
 }
 
 func (IfExpr) astNode()  {}
 func (IfExpr) exprNode() {}
+
+// MatchExpr is a Rust match expression.
+type MatchExpr struct {
+	Pos       Pos
+	Scrutinee Expr
+	Arms      []MatchArm
+}
+
+func (MatchExpr) astNode()  {}
+func (MatchExpr) exprNode() {}
+
+// MatchArm is one pattern group and its result expression.
+type MatchArm struct {
+	Patterns []Pattern
+	Body     Expr
+}
 
 // WhileStmt is a while loop statement.
 type WhileStmt struct {
@@ -600,13 +700,24 @@ func (RefType) typeNode() {}
 
 // ArrayType is an array type.
 type ArrayType struct {
-	Pos  Pos
-	Elem Type
-	Len  int64
+	Pos     Pos
+	Elem    Type
+	Len     int64
+	LenName string // non-empty when the length is a const generic parameter ([T; N])
 }
 
 func (ArrayType) astNode()  {}
 func (ArrayType) typeNode() {}
+
+// ConstIntLitType represents an integer literal used as a const generic
+// argument, e.g. `Arr<3>`. It is only produced in a type-argument position.
+type ConstIntLitType struct {
+	Pos Pos
+	Val int64
+}
+
+func (ConstIntLitType) astNode()  {}
+func (ConstIntLitType) typeNode() {}
 
 // SliceType is a slice/unsized array type [T].
 type SliceType struct {
@@ -616,3 +727,80 @@ type SliceType struct {
 
 func (SliceType) astNode()  {}
 func (SliceType) typeNode() {}
+
+// PosOf returns the source position of any node that implements GetPos.
+func PosOf(n Node) Pos {
+	if p, ok := n.(interface{ GetPos() Pos }); ok {
+		return p.GetPos()
+	}
+	return 0
+}
+
+// Position accessors so diagnostics report accurate spans instead of 1:1.
+
+func (n FnDecl) GetPos() Pos          { return n.Pos }
+func (n StructDecl) GetPos() Pos      { return n.Pos }
+func (n EnumDecl) GetPos() Pos        { return n.Pos }
+func (n AssocTypeDecl) GetPos() Pos   { return n.Pos }
+func (n AssocConstDecl) GetPos() Pos  { return n.Pos }
+func (n TraitDecl) GetPos() Pos       { return n.Pos }
+func (n ImplDecl) GetPos() Pos        { return n.Pos }
+func (n MacroRulesDecl) GetPos() Pos  { return n.Pos }
+func (n ModDecl) GetPos() Pos         { return n.Pos }
+func (n UseDecl) GetPos() Pos         { return n.Pos }
+func (n ExternCrateDecl) GetPos() Pos { return n.Pos }
+func (n MacroCallDecl) GetPos() Pos   { return n.Pos }
+func (n ConstDecl) GetPos() Pos       { return n.Pos }
+func (n StaticDecl) GetPos() Pos      { return n.Pos }
+func (n TypeAliasDecl) GetPos() Pos   { return n.Pos }
+func (n BlockExpr) GetPos() Pos       { return n.Pos }
+func (n UnsafeBlockExpr) GetPos() Pos { return n.Pos }
+func (n TupleExpr) GetPos() Pos       { return n.Pos }
+func (n IntLit) GetPos() Pos          { return n.Pos }
+func (n BoolLit) GetPos() Pos         { return n.Pos }
+func (n StringLit) GetPos() Pos       { return n.Pos }
+func (n PathExpr) GetPos() Pos        { return n.Pos }
+func (n Ident) GetPos() Pos           { return n.Pos }
+func (n BinaryExpr) GetPos() Pos      { return n.Pos }
+func (n RangeExpr) GetPos() Pos       { return n.Pos }
+func (n ClosureExpr) GetPos() Pos     { return n.Pos }
+func (n UnaryExpr) GetPos() Pos       { return n.Pos }
+func (n CastExpr) GetPos() Pos        { return n.Pos }
+func (n CallExpr) GetPos() Pos        { return n.Pos }
+func (n IfExpr) GetPos() Pos          { return n.Pos }
+func (n MatchExpr) GetPos() Pos       { return n.Pos }
+func (n FieldExpr) GetPos() Pos       { return n.Pos }
+func (n IndexExpr) GetPos() Pos       { return n.Pos }
+func (n StructLit) GetPos() Pos       { return n.Pos }
+func (n ArrayLit) GetPos() Pos        { return n.Pos }
+func (n MacroCallExpr) GetPos() Pos   { return n.Pos }
+func (n LetStmt) GetPos() Pos         { return n.Pos }
+func (n AssignStmt) GetPos() Pos      { return n.Pos }
+func (n ReturnStmt) GetPos() Pos      { return n.Pos }
+func (n WhileStmt) GetPos() Pos       { return n.Pos }
+func (n ForStmt) GetPos() Pos         { return n.Pos }
+func (n PatIdent) GetPos() Pos        { return n.Pos }
+func (n PatWildcard) GetPos() Pos     { return n.Pos }
+func (n PatStruct) GetPos() Pos       { return n.Pos }
+func (n PatField) GetPos() Pos        { return n.Pos }
+func (n PatTuple) GetPos() Pos        { return n.Pos }
+func (n PatSlice) GetPos() Pos        { return n.Pos }
+func (n PatPath) GetPos() Pos         { return n.Pos }
+func (n PatRange) GetPos() Pos        { return n.Pos }
+func (n PatOr) GetPos() Pos           { return n.Pos }
+func (n PatLit) GetPos() Pos          { return n.Pos }
+func (n TupleType) GetPos() Pos       { return n.Pos }
+func (n ImplTraitType) GetPos() Pos   { return n.Pos }
+func (n NamedType) GetPos() Pos       { return n.Pos }
+func (n RefType) GetPos() Pos         { return n.Pos }
+func (n ArrayType) GetPos() Pos       { return n.Pos }
+func (n ConstIntLitType) GetPos() Pos { return n.Pos }
+func (n SliceType) GetPos() Pos       { return n.Pos }
+
+// GetPos delegates to the wrapped expression (ExprStmt has no own position).
+func (n ExprStmt) GetPos() Pos {
+	if n.Expr != nil {
+		return PosOf(n.Expr)
+	}
+	return 0
+}

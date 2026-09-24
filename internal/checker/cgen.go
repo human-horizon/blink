@@ -16,6 +16,7 @@ type CGen struct {
 	indent    int
 	monoInsts map[string][][]types.Type
 	tupleDefs map[string]*types.Tuple
+	adtDefs   map[string]*adtDef
 }
 
 // GenerateC returns a complete C translation unit for the checked program.
@@ -24,6 +25,7 @@ func (c *Checker) GenerateC() string {
 		c:         c,
 		monoInsts: make(map[string][][]types.Type),
 		tupleDefs: make(map[string]*types.Tuple),
+		adtDefs:   make(map[string]*adtDef),
 	}
 	return g.generate()
 }
@@ -31,10 +33,16 @@ func (c *Checker) GenerateC() string {
 func (g *CGen) generate() string {
 	g.out.WriteString("#include <stdint.h>\n")
 	g.out.WriteString("#include <stddef.h>\n")
-	g.out.WriteString("#include <string.h>\n\n")
+	g.out.WriteString("#include <string.h>\n")
+	g.out.WriteString("#include <stdlib.h>\n\n")
 
 	g.collectTupleTypes()
+	g.collectAdts()
 	g.collectMonomorphizations()
+	// Tagged-union enum structs must be complete before prototypes use them
+	// by value (TinyCC rejects incompatible redefinitions).
+	g.emitEnumPayloadDefs()
+	g.emitAdtDefs()
 	g.emitForwardDecls()
 	g.emitStructDefs()
 	g.emitEnumConstants()
@@ -111,6 +119,11 @@ func (g *CGen) emitStructDefs() {
 
 func (g *CGen) emitEnumConstants() {
 	for key, info := range g.c.enums {
+		if g.enumHasPayload(info) {
+			// Payload enums are tagged-union structs; their variant names are
+			// used as struct members and must not become macros.
+			continue
+		}
 		name := g.mangleName(key, nil)
 		for i, v := range info.decl.Variants {
 			g.writeln("#define ", name, "__", v.Name, " ", strconv.Itoa(i))
@@ -264,6 +277,8 @@ func (g *CGen) stmt(s ast.Stmt) {
 		g.indent--
 		g.writei("}")
 		g.newline()
+	case *ast.ForStmt:
+		g.forStmt(st)
 	default:
 		g.writei("/* unsupported stmt */;")
 		g.newline()
@@ -272,9 +287,9 @@ func (g *CGen) stmt(s ast.Stmt) {
 
 func (g *CGen) letStmt(st *ast.LetStmt) {
 	valTy := g.c.ExprType(st.Value)
-	ty := g.cType(g.resolveType(st.Ty))
+	declTy := g.resolveType(st.Ty)
 	if st.Ty == nil && valTy != nil {
-		ty = g.cType(valTy)
+		declTy = valTy
 	}
 	val := g.expr(st.Value)
 	pat := st.Pattern
@@ -288,11 +303,11 @@ func (g *CGen) letStmt(st *ast.LetStmt) {
 			g.newline()
 			return
 		}
-		g.writei(ty, " ", g.ident(p.Name), " = ", val, ";")
+		g.writei(g.declString(declTy, g.ident(p.Name)), " = ", val, ";")
 		g.newline()
 	case *ast.PatTuple:
 		tmp := g.fresh("tuple")
-		g.writei(g.cType(valTy), " ", tmp, " = ", val, ";")
+		g.writei(g.declString(valTy, tmp), " = ", val, ";")
 		g.newline()
 		for i, elem := range p.Elements {
 			if id, ok := elem.(*ast.PatIdent); ok && id.Name != "_" {
@@ -303,7 +318,7 @@ func (g *CGen) letStmt(st *ast.LetStmt) {
 		}
 	case *ast.PatStruct:
 		tmp := g.fresh("struct")
-		g.writei(g.cType(valTy), " ", tmp, " = ", val, ";")
+		g.writei(g.declString(valTy, tmp), " = ", val, ";")
 		g.newline()
 		for _, f := range p.Fields {
 			if f.BindName == "_" {
@@ -317,7 +332,7 @@ func (g *CGen) letStmt(st *ast.LetStmt) {
 			g.newline()
 		}
 	default:
-		g.writei(ty, " ", g.ident(st.Name), " = ", val, ";")
+		g.writei(g.declString(declTy, g.ident(st.Name)), " = ", val, ";")
 		g.newline()
 	}
 }
@@ -339,6 +354,13 @@ func (g *CGen) expr(e ast.Expr) string {
 	case *ast.Ident:
 		if _, ok := g.c.structs[ex.Name]; ok {
 			return "((struct " + g.mangleName(ex.Name, nil) + "){ })"
+		}
+		if ex.Name == "None" || ex.Name == "Ok" || ex.Name == "Err" || ex.Name == "Some" {
+			if rt := g.c.ExprType(ex); isAdt(rt) {
+				if ex.Name == "None" {
+					return g.adtConstructor(rt, "None", "0")
+				}
+			}
 		}
 		return g.ident(ex.Name)
 	case *ast.PathExpr:
@@ -365,6 +387,8 @@ func (g *CGen) expr(e ast.Expr) string {
 		return g.tupleExpr(ex)
 	case *ast.UnsafeBlockExpr:
 		return g.blockExpr(ex.Body)
+	case *ast.MatchExpr:
+		return g.matchExpr(ex)
 	case *ast.MacroCallExpr:
 		return g.macroCallExpr(ex)
 	default:
@@ -395,6 +419,43 @@ func (g *CGen) unaryOp(op string) string {
 }
 
 func (g *CGen) callExpr(e *ast.CallExpr) string {
+	if v := adtVariantFromFunc(e.Func); v != "" {
+		if rt := g.c.ExprType(e); isAdt(rt) {
+			arg := "0"
+			if len(e.Args) == 1 {
+				arg = g.expr(e.Args[0])
+			}
+			return g.adtConstructor(rt, v, arg)
+		}
+	}
+	if p, ok := e.Func.(*ast.PathExpr); ok {
+		if enumKey, variant, ok2 := g.c.enumVariantPath(p.Segments); ok2 {
+			ei := g.c.enums[enumKey]
+			if g.enumHasPayload(ei) {
+				var args []string
+				for _, a := range e.Args {
+					args = append(args, g.expr(a))
+				}
+				return g.enumConstructor(enumKey, ei, variant, args)
+			}
+		}
+	}
+	if field, ok := e.Func.(*ast.FieldExpr); ok {
+		recvTy := g.c.ExprType(field.Expr)
+		baseTy := recvTy
+		if ref, isRef := recvTy.(*types.Ref); isRef {
+			baseTy = ref.Elem
+		}
+		if isAdt(baseTy) {
+			recvStr := g.expr(field.Expr)
+			if _, isRef := recvTy.(*types.Ref); isRef {
+				recvStr = "(*" + recvStr + ")"
+			}
+			if s, ok2 := g.adtMethodCall(baseTy, field.Field, recvStr); ok2 {
+				return s
+			}
+		}
+	}
 	var recv string
 	var methodName string
 	if field, ok := e.Func.(*ast.FieldExpr); ok {
@@ -543,14 +604,52 @@ func (g *CGen) macroCallExpr(e *ast.MacroCallExpr) string {
 }
 
 func (g *CGen) pathExpr(e *ast.PathExpr) string {
+	if len(e.Segments) >= 2 && !isUserEnumVariant(g, e) {
+		if rt := g.c.ExprType(e); isAdt(rt) {
+			last := e.Segments[len(e.Segments)-1]
+			if last == "None" {
+				return g.adtConstructor(rt, "None", "0")
+			}
+			if tag, _, known := adtTag(last); known && tag != 0 {
+				// Unapplied ADT constructor usage is not representable.
+				return "0 /* ADT constructor requires arguments */"
+			}
+		}
+	}
+	if len(e.Segments) >= 2 {
+		if enumKey, variant, ok := g.c.enumVariantPath(e.Segments); ok {
+			ei := g.c.enums[enumKey]
+			if g.enumHasPayload(ei) {
+				if fs, _ := g.c.variantFields(enumKey, ei, variant); len(fs) == 0 {
+					return g.enumConstructor(enumKey, ei, variant, nil)
+				}
+			}
+		}
+	}
 	key := strings.Join(e.Segments, "::")
 	return g.mangleName(key, nil)
 }
 
-func (g *CGen) cType(t types.Type) string {
-	if t == nil {
-		return "int"
+// isUserEnumVariant reports whether the path resolves to a declared enum
+// variant (handled separately from builtin ADT constructors).
+func isUserEnumVariant(g *CGen, e *ast.PathExpr) bool {
+	if len(e.Segments) < 2 {
+		return false
 	}
+	_, _, ok := g.c.enumVariantPath(e.Segments)
+	return ok
+}
+
+// declString renders a C declaration `TYPE name`, moving array declarators to
+// the legal position (`name[N]`, not `TYPE[N] name`).
+func (g *CGen) declString(t types.Type, name string) string {
+	if arr, ok := t.(*types.Array); ok && arr.LenName == "" && arr.Len > 0 {
+		return g.cType(arr.Elem) + " " + name + "[" + strconv.FormatInt(arr.Len, 10) + "]"
+	}
+	return g.cType(t) + " " + name
+}
+
+func (g *CGen) cType(t types.Type) string {
 	switch ty := t.(type) {
 	case *types.Builtin:
 		switch ty.Name {
@@ -566,17 +665,28 @@ func (g *CGen) cType(t types.Type) string {
 			return ty.Name
 		}
 	case *types.Named:
-		if _, ok := g.c.enums[ty.Name]; ok {
+		if key, ei, ok := g.enumByTypeName(ty.Name); ok {
+			if g.enumHasPayload(ei) {
+				return "struct " + g.mangleName(key, nil)
+			}
 			return "int"
 		}
 		return "struct " + g.mangleName(ty.Name, nil)
 	case *types.Ref:
 		return g.cType(ty.Elem) + "*"
 	case *types.Array:
+		// Const-generic length is not known at codegen time without
+		// monomorphization; emit an opaque sized array.
+		if ty.LenName != "" {
+			return g.cType(ty.Elem) + "[0]"
+		}
 		return g.cType(ty.Elem) + "[" + strconv.FormatInt(ty.Len, 10) + "]"
 	case *types.Tuple:
 		return "struct " + g.tupleTypeName(ty)
 	case *types.Applied:
+		if isAdt(ty) {
+			return "struct " + g.adtTypeName(ty)
+		}
 		return g.cType(ty.Base)
 	case *types.Generic:
 		return "int /* generic */"
@@ -685,7 +795,7 @@ func (g *CGen) resolveType(t ast.Type) types.Type {
 		}
 		return &types.Tuple{Elems: elems}
 	case *ast.ArrayType:
-		return &types.Array{Elem: g.resolveType(ty.Elem), Len: ty.Len}
+		return &types.Array{Elem: g.resolveType(ty.Elem), Len: ty.Len, LenName: ty.LenName}
 	default:
 		return nil
 	}
@@ -788,6 +898,9 @@ func (g *CGen) collectBlock(block *ast.BlockExpr) {
 		case *ast.WhileStmt:
 			g.collectExpr(s.Cond)
 			g.collectBlock(s.Body)
+		case *ast.ForStmt:
+			g.collectExpr(s.Iter)
+			g.collectBlock(s.Body)
 		}
 	}
 	g.collectExpr(block.Result)
@@ -819,6 +932,11 @@ func (g *CGen) collectExpr(expr ast.Expr) {
 		g.collectExpr(e.Cond)
 		g.collectBlock(e.ThenBlock)
 		g.collectBlock(e.ElseBlock)
+	case *ast.MatchExpr:
+		g.collectExpr(e.Scrutinee)
+		for _, arm := range e.Arms {
+			g.collectExpr(arm.Body)
+		}
 	case *ast.FieldExpr:
 		g.collectExpr(e.Expr)
 	case *ast.IndexExpr:
